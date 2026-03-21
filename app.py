@@ -143,6 +143,22 @@ def ensure_sheets():
 
 # ── CRUD ───────────────────────────────────────────────────────────────────────
 
+def _parse_dates(series):
+    """Handle DD/MM/YYYY, YYYY-MM-DD, and other common formats."""
+    def parse_one(v):
+        s = str(v).strip()
+        if not s or s in ("nan","None","NaT",""):
+            return pd.NaT
+        if len(s) == 10 and s[4] == "-":          # YYYY-MM-DD
+            try: return pd.Timestamp(s)
+            except: pass
+        for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%Y/%m/%d"):
+            try: return pd.Timestamp(pd.to_datetime(s, format=fmt))
+            except: pass
+        try: return pd.Timestamp(pd.to_datetime(s, dayfirst=True))
+        except: return pd.NaT
+    return series.apply(parse_one)
+
 @st.cache_data(ttl=20)
 def load_transactions():
     ss = get_ss()
@@ -150,9 +166,10 @@ def load_transactions():
     if not data:
         return pd.DataFrame(columns=HEADERS["Transactions"])
     df = pd.DataFrame(data)
-    df["Date"]   = pd.to_datetime(df["Date"], errors="coerce")
+    df["Date"]   = _parse_dates(df["Date"])
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
     return df
+
 
 @st.cache_data(ttl=60)
 def load_importlog():
@@ -278,11 +295,11 @@ html, body,
 [data-testid="stAppViewContainer"] > .main {{
     max-width: 480px;
     margin: 0 auto;
-    padding: 0 0 100px 0 !important;
+    padding: 0 0 16px 0 !important;
 }}
 
 .block-container {{
-    padding: 0 12px 8px !important;
+    padding: 0 12px 16px !important;
     max-width: 480px !important;
 }}
 
@@ -405,6 +422,21 @@ footer, #MainMenu {{ display:none !important; }}
 .nav-on [data-testid="stButton"] > button {{
     color: {C["primary"]} !important;
     background: {C["primary_dim"]} !important;
+}}
+
+/* Home category drill-down buttons */
+.home-cat-btn [data-testid="stButton"] > button {{
+    background: {C["surface"]} !important;
+    border: 1px solid {C["border"]} !important;
+    border-radius: 10px !important;
+    color: {C["text"]} !important;
+    font-size: .82rem !important; font-weight: 700 !important;
+    text-align: left !important; justify-content: flex-start !important;
+    padding: 8px 12px !important; margin-bottom: 0 !important;
+}}
+.home-cat-btn [data-testid="stButton"] > button:hover {{
+    border-color: {C["primary"]} !important;
+    background: rgba(124,109,248,0.08) !important;
 }}
 
 /* FAB */
@@ -624,10 +656,31 @@ def dlg_edit(txn):
     amount  = st.number_input("Amount (₹)", value=abs(float(txn["Amount"])),
                                min_value=0.0, step=1.0, format="%.0f", key="dlg_amt")
     merch   = st.text_input("Merchant", value=txn["Merchant"], key="dlg_merch")
-    sel_cat = st.selectbox("Category", cats, index=cat_idx, key="dlg_cat")
-    subs    = cats_df[cats_df["Category"]==sel_cat]["Subcategory"].tolist()
+    dlg_cat_opts = cats + ["➕ New category…"]
+    sel_cat_r = st.selectbox("Category", dlg_cat_opts, index=cat_idx, key="dlg_cat")
+    if sel_cat_r == "➕ New category…":
+        nc = st.text_input("New category", key="dlg_nc")
+        ns = st.text_input("First subcategory", key="dlg_ns")
+        if st.button("✅ Create", key="dlg_create_cat"):
+            if nc.strip() and ns.strip():
+                get_ss().worksheet("Categories").append_row([nc.strip(), ns.strip(),"","📌"])
+                st.cache_data.clear(); st.rerun()
+        sel_cat = cats[0] if cats else "Others"
+    else:
+        sel_cat = sel_cat_r
+    subs = cats_df[cats_df["Category"]==sel_cat]["Subcategory"].tolist()
     sub_idx = subs.index(txn.get("Subcategory","")) if txn.get("Subcategory","") in subs else 0
-    sel_sub = st.selectbox("Subcategory", subs, index=sub_idx, key="dlg_sub") if subs else ""
+    dlg_sub_opts = subs + ["➕ New subcategory…"] if subs else ["➕ New subcategory…"]
+    sel_sub_r = st.selectbox("Subcategory", dlg_sub_opts, index=sub_idx, key="dlg_sub") if dlg_sub_opts else ""
+    if sel_sub_r == "➕ New subcategory…":
+        ns2 = st.text_input("New subcategory name", key="dlg_ns2")
+        if st.button("✅ Add Sub", key="dlg_create_sub"):
+            if ns2.strip():
+                get_ss().worksheet("Categories").append_row([sel_cat, ns2.strip(),"","📌"])
+                st.cache_data.clear(); st.rerun()
+        sel_sub = subs[0] if subs else ""
+    else:
+        sel_sub = sel_sub_r
     pm_idx  = PAYMENT_METHODS.index(txn.get("PaymentMethod","UPI")) if txn.get("PaymentMethod","UPI") in PAYMENT_METHODS else 0
     pm      = st.selectbox("Payment Method", PAYMENT_METHODS, index=pm_idx, key="dlg_pm")
     txn_dt  = st.date_input("Date",
@@ -733,9 +786,9 @@ def screen_home():
             <div class="mono" style="font-size:1.1rem;color:{s_color}">{s_rate:.1f}%</div>
         </div>""", unsafe_allow_html=True)
 
-    # ── TOP CATEGORIES
+    # ── TOP CATEGORIES (clickable → filter Spends)
     if not mdf.empty:
-        st.markdown('<div class="section-label">Top Categories</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-label">Top Categories <span style="font-size:.65rem;color:{C["muted"]}">tap to explore</span></div>', unsafe_allow_html=True)
         exp_df = mdf[mdf["Amount"] < 0]
         if not exp_df.empty:
             top = exp_df.groupby("Category")["Amount"].sum().abs().sort_values(ascending=False).head(5)
@@ -743,16 +796,30 @@ def screen_home():
             for cat, amt in top.items():
                 ico = cat_icon(cat)
                 w   = (amt / mx * 100) if mx > 0 else 0
-                st.markdown(f"""
-                <div class="card-sm">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <span style="font-size:1.1rem">{ico}</span>
-                            <span style="font-weight:700;font-size:.88rem">{cat}</span>
-                        </div>
-                        <span class="mono" style="font-size:.88rem;color:{C['expense']}">{sym}{amt:,.0f}</span>
-                    </div>
-                    <div class="bar-wrap"><div class="bar-fill" style="width:{w:.0f}%;background:{C['primary']}"></div></div>
+                cc1, cc2 = st.columns([1, 5])
+                with cc1:
+                    # Invisible click target — whole row is tappable via button
+                    pass
+                with cc2:
+                    pass
+                # Full-width clickable row using button
+                st.markdown('<div class="home-cat-btn">', unsafe_allow_html=True)
+                if st.button(
+                    f"{ico}  {cat}   {sym}{amt:,.0f}",
+                    key=f"home_cat_{cat}",
+                    use_container_width=True,
+                ):
+                    st.session_state.nav = "transactions"
+                    st.session_state.filter_cat = cat
+                    # Set month/year to current home month
+                    st.session_state.f_month = now.month
+                    st.session_state.f_year  = now.year
+                    st.session_state.search  = ""
+                    st.rerun()
+                # Progress bar below button
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown(f"""<div class="bar-wrap" style="margin:-2px 0 6px">
+                    <div class="bar-fill" style="width:{w:.0f}%;background:{C['primary']}"></div>
                 </div>""", unsafe_allow_html=True)
 
     # ── RECENT TRANSACTIONS
@@ -955,16 +1022,49 @@ def screen_add():
     ttype = st.radio("", ["💸 Expense","💰 Income"], horizontal=True, key="add_type")
     is_exp = "Expense" in ttype
 
+    # ── CATEGORY (outside form for dynamic reaction)
+    CAT_OPTIONS = cats + ["➕ New category…"]
+    sel_cat_raw = st.selectbox("Category", CAT_OPTIONS, key="add_cat_sel")
+    if sel_cat_raw == "➕ New category…":
+        new_cat_name = st.text_input("New category name", key="add_cat_new",
+                                      placeholder="e.g. Pet Care")
+        new_sub_name = st.text_input("First subcategory name", key="add_sub_new",
+                                      placeholder="e.g. Vet & Medicine")
+        if st.button("✅ Create Category", key="create_cat"):
+            if new_cat_name.strip() and new_sub_name.strip():
+                ss = get_ss(); ws = ss.worksheet("Categories")
+                ws.append_row([new_cat_name.strip(), new_sub_name.strip(), "", "📌"])
+                st.cache_data.clear()
+                st.success(f"✅ Created {new_cat_name} › {new_sub_name}")
+                st.rerun()
+            else:
+                st.error("Enter both names.")
+        sel_cat = cats[0] if cats else "Others"
+    else:
+        sel_cat = sel_cat_raw
+
+    subs_list = cats_df[cats_df["Category"]==sel_cat]["Subcategory"].tolist()
+    SUB_OPTIONS = subs_list + ["➕ New subcategory…"] if subs_list else ["➕ New subcategory…"]
+    sel_sub_raw = st.selectbox("Subcategory", SUB_OPTIONS, key="add_sub_sel")
+    if sel_sub_raw == "➕ New subcategory…":
+        new_sub2 = st.text_input("New subcategory name", key="add_sub2_new",
+                                   placeholder="e.g. Train & Bus")
+        if st.button("✅ Add Subcategory", key="create_sub"):
+            if new_sub2.strip():
+                ss = get_ss(); ws = ss.worksheet("Categories")
+                ws.append_row([sel_cat, new_sub2.strip(), "", "📌"])
+                st.cache_data.clear()
+                st.success(f"✅ Added {sel_cat} › {new_sub2}")
+                st.rerun()
+            else:
+                st.error("Enter subcategory name.")
+        sel_sub = subs_list[0] if subs_list else ""
+    else:
+        sel_sub = sel_sub_raw
+
     with st.form("add_form", clear_on_submit=True):
         amount  = st.number_input(f"Amount ({sym})", min_value=0.0, step=1.0, format="%.0f")
         merch   = st.text_input("Merchant / Description", placeholder="e.g. Swiggy, BESCOM, Salary...")
-
-        c1, c2 = st.columns(2)
-        with c1:
-            sel_cat = st.selectbox("Category", cats)
-        with c2:
-            subs = cats_df[cats_df["Category"]==sel_cat]["Subcategory"].tolist()
-            sel_sub = st.selectbox("Subcategory", subs) if subs else ""
 
         c3, c4 = st.columns(2)
         with c3:
@@ -972,8 +1072,7 @@ def screen_add():
         with c4:
             txn_date = st.date_input("Date", value=date.today())
 
-        tags  = st.text_input("Tags (optional)", placeholder="vacation, work, gift...")
-        notes = st.text_input("Notes (optional)", placeholder="Quick note...")
+        notes = st.text_input("Notes (optional)", placeholder="Quick note…")
 
         if st.form_submit_button("💾  Save Transaction", use_container_width=True, type="primary"):
             if amount > 0 and merch.strip():
@@ -986,7 +1085,7 @@ def screen_add():
                     "Category":    sel_cat,
                     "Subcategory": sel_sub,
                     "PaymentMethod": pm,
-                    "Tags": tags, "Notes": notes,
+                    "Notes": notes,
                     "Source": "manual", "AutoCat": "no",
                 })
                 st.success(f"✅ {'Expense' if is_exp else 'Income'} of {sym}{amount:,.0f} saved!")
@@ -1458,8 +1557,6 @@ def main():
     elif nav == "add":          screen_add()
     elif nav == "analytics":    screen_analytics()
     elif nav == "settings":     screen_settings()
-
-    render_nav()
 
 
 if __name__ == "__main__":
