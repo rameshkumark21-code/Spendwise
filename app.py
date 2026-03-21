@@ -448,13 +448,13 @@ footer, #MainMenu {{ display:none !important; }}
 
 /* Top nav dropdown — compact */
 [data-testid="stSelectbox"][aria-label="top_nav_dd"] > div > div,
-div[data-key="top_nav_dd"] > div > div > div {
+div[data-key="top_nav_dd"] > div > div > div {{
     background: rgba(124,109,248,0.12) !important;
     border: 1px solid #7c6df8 !important;
     border-radius: 10px !important;
     font-weight: 800 !important;
     font-size: .82rem !important;
-}
+}}
 
 /* Inputs */
 [data-testid="stTextInput"] input,
