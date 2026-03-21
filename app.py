@@ -810,6 +810,7 @@ def screen_home():
                     use_container_width=True,
                 ):
                     st.session_state.nav = "transactions"
+                    st.session_state["_force_nav"] = "transactions"
                     st.session_state.filter_cat = cat
                     # Set month/year to current home month
                     st.session_state.f_month = now.month
@@ -966,7 +967,7 @@ def screen_transactions():
     ):
         day_total = grp["Amount"].sum()
         dc        = C["income"] if day_total >= 0 else C["expense"]
-        day_str   = pd.Timestamp(day).strftime("%a %d %b" + (" %Y" if day.year != datetime.today().year else ""))
+        day_str = pd.Timestamp(day).strftime("%a, %d %b %Y")
         st.markdown(f"""
         <div style="display:flex;justify-content:space-between;padding:5px 2px 2px;
              border-bottom:1px solid {C['border']}">
@@ -1551,7 +1552,7 @@ def main():
     run_setup()
 
     render_top_bar()
-    nav = st.session_state.nav
+    nav = st.session_state.pop("_force_nav", None) or st.session_state.nav
     if   nav == "home":         screen_home()
     elif nav == "transactions": screen_transactions()
     elif nav == "add":          screen_add()
