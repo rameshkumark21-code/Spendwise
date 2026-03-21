@@ -9,7 +9,8 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
-import json, uuid, re, calendar
+import json, uuid, re, calendar, time, time
+import time
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
@@ -153,6 +154,15 @@ def load_transactions():
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
     return df
 
+@st.cache_data(ttl=60)
+def load_importlog():
+    ss = get_ss()
+    try:
+        data = ss.worksheet("ImportLog").get_all_records()
+        return pd.DataFrame(data) if data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
 @st.cache_data(ttl=120)
 def load_categories():
     ss = get_ss()
@@ -196,6 +206,7 @@ def _update_txn(row_id, upd):
             new_row = [upd.get(h, row[j]) for j, h in enumerate(hdrs)]
             ws.update(f"A{i}:{chr(64+len(hdrs))}{i}", [new_row])
             break
+    time.sleep(1)
     st.cache_data.clear()
 
 def _delete_txn(row_id):
@@ -435,6 +446,16 @@ footer, #MainMenu {{ display:none !important; }}
     box-shadow: 0 3px 12px rgba(124,109,248,.4) !important;
 }}
 
+/* Top nav dropdown — compact */
+[data-testid="stSelectbox"][aria-label="top_nav_dd"] > div > div,
+div[data-key="top_nav_dd"] > div > div > div {
+    background: rgba(124,109,248,0.12) !important;
+    border: 1px solid #7c6df8 !important;
+    border-radius: 10px !important;
+    font-weight: 800 !important;
+    font-size: .82rem !important;
+}
+
 /* Inputs */
 [data-testid="stTextInput"] input,
 [data-testid="stNumberInput"] input,
@@ -508,11 +529,13 @@ def init_state():
         "nav":          "home",
         "edit_txn":     None,
         "filter_cat":   "All",
-        "f_month":      0,   # 0 = auto-detect from data
-        "f_year":       0,   # 0 = auto-detect from data
+        "f_month":      0,
+        "f_year":       0,
         "search":       "",
+        "search_all":   False,
         "preview_rows": None,
         "setup_ok":     False,
+        "cat_view":     "Category",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -522,6 +545,38 @@ def init_state():
 # ═══════════════════════════════════════════════════════════════════════════════
 #  BOTTOM NAVIGATION
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def render_top_bar():
+    """Dropdown page nav + reload + sync status strip at top of every page."""
+    NAV_LABELS = {
+        "home": "🏠 Home",
+        "transactions": "📋 Spends",
+        "add": "➕ Add",
+        "analytics": "📊 Insights",
+        "settings": "⚙️ Settings",
+    }
+    c1, c2, c3 = st.columns([4, 1, 1])
+    with c1:
+        current_label = NAV_LABELS.get(st.session_state.nav, "🏠 Home")
+        choice = st.selectbox("", list(NAV_LABELS.values()),
+                              index=list(NAV_LABELS.values()).index(current_label),
+                              key="top_nav_dd", label_visibility="collapsed")
+        chosen_key = [k for k,v in NAV_LABELS.items() if v == choice][0]
+        if chosen_key != st.session_state.nav:
+            st.session_state.nav = chosen_key; st.rerun()
+    with c2:
+        if st.button("🔄", key="top_reload", help="Refresh data"):
+            st.cache_data.clear(); st.rerun()
+    with c3:
+        if st.button("⚡", key="top_sync", help="Pull latest from Sheets"):
+            st.cache_data.clear()
+            log = load_importlog()
+            if not log.empty and "Imported" in log.columns:
+                last = log.iloc[-1]
+                st.toast(f"Last import: {last.get('Imported','?')} · {last.get('Skipped','?')}", icon="✅")
+            else:
+                st.toast("Cache cleared — data reloaded", icon="✅")
+            st.rerun()
 
 NAV_ITEMS = [
     ("home",         "🏠", "Home"),
@@ -740,139 +795,154 @@ def screen_transactions():
     settings = load_settings()
     sym      = settings.get("currency_symbol","₹")
 
-    st.markdown('<div class="page-title">Transactions 📋</div>', unsafe_allow_html=True)
+    # ── TOP BAR: title + reload
+    c_t, c_r = st.columns([5,1])
+    with c_t:
+        st.markdown('<div class="page-title">Spends 📋</div>', unsafe_allow_html=True)
+    with c_r:
+        if st.button("🔄", key="txn_reload", help="Reload data"):
+            st.cache_data.clear(); st.rerun()
 
-    # ── SEARCH
-    q = st.text_input("", placeholder="🔍  Search merchant...", key="txn_q",
-                      value=st.session_state.search, label_visibility="collapsed")
-    st.session_state.search = q
+    # ── SEARCH (across all months when typing)
+    q = st.text_input("", placeholder="🔍  Search all transactions...", key="txn_q",
+                      label_visibility="collapsed")
 
-    # ── MONTH / YEAR
-    c1, c2 = st.columns(2)
     MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    # Auto-detect most recent month that has data
+    # ── AUTO-DETECT latest month
     if (st.session_state.f_month == 0 or st.session_state.f_year == 0) and not df.empty:
-        latest = df.dropna(subset=["Date"]).sort_values("Date", ascending=False).iloc[0]["Date"]
+        latest = df.dropna(subset=["Date"]).sort_values("Date",ascending=False).iloc[0]["Date"]
         st.session_state.f_month = int(latest.month)
         st.session_state.f_year  = int(latest.year)
     elif st.session_state.f_month == 0:
         st.session_state.f_month = datetime.today().month
         st.session_state.f_year  = datetime.today().year
-    # Build year list from actual data range
-    if not df.empty:
-        years = sorted(df["Date"].dropna().dt.year.unique().astype(int).tolist())
-    else:
-        years = list(range(datetime.today().year - 2, datetime.today().year + 1))
-    if st.session_state.f_year not in years:
-        st.session_state.f_year = years[-1]
-    c1t, c2t = st.columns(2)
-    with c1t:
-        sel_m = st.selectbox("Month", MONTHS, index=st.session_state.f_month - 1, key="t_month",
-                              label_visibility="collapsed")
-        st.session_state.f_month = MONTHS.index(sel_m) + 1
-    with c2t:
-        sel_y = st.selectbox("Year", years,
-                              index=years.index(st.session_state.f_year),
-                              key="t_year", label_visibility="collapsed")
-        st.session_state.f_year = int(sel_y)
+
+    years = sorted(df["Date"].dropna().dt.year.unique().astype(int).tolist()) if not df.empty else [datetime.today().year]
+    if st.session_state.f_year not in years: st.session_state.f_year = years[-1]
+
+    # ── MONTH / YEAR only shown when NOT in search mode
+    if not q:
+        c1t, c2t = st.columns(2)
+        with c1t:
+            sel_m = st.selectbox("", MONTHS, index=st.session_state.f_month-1,
+                                 key="t_month", label_visibility="collapsed")
+            st.session_state.f_month = MONTHS.index(sel_m) + 1
+        with c2t:
+            sel_y = st.selectbox("", years, index=years.index(st.session_state.f_year),
+                                 key="t_year", label_visibility="collapsed")
+            st.session_state.f_year = int(sel_y)
 
     # ── FILTER
     filtered = df.copy()
     if not filtered.empty:
-        ms, me = month_range(st.session_state.f_year, st.session_state.f_month)
-        filtered = filtered[(filtered["Date"].dt.date >= ms) & (filtered["Date"].dt.date <= me)]
-    if q:
-        filtered = filtered[filtered["Merchant"].str.contains(q, case=False, na=False)]
+        if q:
+            # Search mode: ignore month filter, search all data
+            filtered = filtered[filtered["Merchant"].str.contains(q, case=False, na=False)]
+        else:
+            ms, me = month_range(st.session_state.f_year, st.session_state.f_month)
+            filtered = filtered[(filtered["Date"].dt.date >= ms) & (filtered["Date"].dt.date <= me)]
 
-    # ── SUMMARY BAR
+    # ── SUMMARY STRIP
     if not filtered.empty:
-        tot_exp = abs(filtered[filtered["Amount"] < 0]["Amount"].sum())
-        tot_inc = filtered[filtered["Amount"] > 0]["Amount"].sum()
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"""<div class="card-sm" style="text-align:center">
-                <div style="font-size:.6rem;color:{C['muted']};font-weight:800;letter-spacing:.8px;text-transform:uppercase">Expenses</div>
-                <div class="mono" style="color:{C['expense']}">{sym}{tot_exp:,.0f}</div>
-            </div>""", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"""<div class="card-sm" style="text-align:center">
-                <div style="font-size:.6rem;color:{C['muted']};font-weight:800;letter-spacing:.8px;text-transform:uppercase">Income</div>
-                <div class="mono" style="color:{C['income']}">{sym}{tot_inc:,.0f}</div>
-            </div>""", unsafe_allow_html=True)
+        tot_exp = abs(filtered[filtered["Amount"]<0]["Amount"].sum())
+        tot_inc = filtered[filtered["Amount"]>0]["Amount"].sum()
+        label   = f"Search: {q}" if q else f"{MONTHS[st.session_state.f_month-1]} {st.session_state.f_year}"
+        st.markdown(f"""
+        <div style="display:flex;justify-content:space-between;align-items:center;
+             padding:7px 10px;background:{C['surface2']};border-radius:10px;margin:6px 0;
+             font-size:.75rem;font-weight:700">
+            <span style="color:{C['muted']}">{label}</span>
+            <span>
+                <span style="color:{C['expense']};font-family:'JetBrains Mono',monospace">−{sym}{tot_exp:,.0f}</span>
+                &nbsp;·&nbsp;
+                <span style="color:{C['income']};font-family:'JetBrains Mono',monospace">+{sym}{tot_inc:,.0f}</span>
+            </span>
+        </div>""", unsafe_allow_html=True)
 
-    # ── CATEGORY PILLS
-    cats = ["All"] + sorted(filtered["Category"].dropna().unique().tolist()) if not filtered.empty else ["All"]
-    if st.session_state.filter_cat not in cats:
-        st.session_state.filter_cat = "All"
+    # ── CATEGORY PILLS (compact, max 5, abbreviated)
+    if not filtered.empty:
+        cats = ["All"] + sorted(filtered["Category"].dropna().unique().tolist())
+        if st.session_state.filter_cat not in cats: st.session_state.filter_cat = "All"
+        CAT_SHORT = {
+            "Food & Dining":"Food","Bills & Utilities":"Bills",
+            "Transport":"Transit","Health":"Health","Shopping":"Shop",
+            "Entertainment":"Fun","Travel":"Travel","Personal Care":"Care",
+            "Investments":"Invest","Gifts & Social":"Gifts",
+            "Rent & Housing":"Rent","Others":"Other",
+        }
+        ncols = min(len(cats), 5)
+        pill_cols = st.columns(ncols)
+        for i, cat in enumerate(cats[:ncols]):
+            with pill_cols[i]:
+                lbl = CAT_SHORT.get(cat, cat[:6]) if cat != "All" else "All"
+                on  = cat == st.session_state.filter_cat
+                st.markdown(f'<div class="{"pill-on" if on else "pill-off"}">', unsafe_allow_html=True)
+                if st.button(lbl, key=f"pill_{cat}"):
+                    st.session_state.filter_cat = cat; st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+        if st.session_state.filter_cat != "All":
+            filtered = filtered[filtered["Category"]==st.session_state.filter_cat]
 
-    pill_cols = st.columns(min(len(cats), 5))
-    for i, cat in enumerate(cats[:5]):
-        with pill_cols[i]:
-            on = cat == st.session_state.filter_cat
-            st.markdown(f'<div class="{"pill-on" if on else "pill-off"}">', unsafe_allow_html=True)
-            if st.button(cat[:8], key=f"pill_{cat}"):
-                st.session_state.filter_cat = cat
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    if st.session_state.filter_cat != "All":
-        filtered = filtered[filtered["Category"] == st.session_state.filter_cat]
-
-    # ── LIST
+    # ── EMPTY STATE
     if filtered.empty:
-        st.markdown(f"""<div class="card" style="text-align:center;padding:36px;margin-top:12px">
-            <div style="font-size:2rem">🔍</div>
-            <div style="font-weight:800;margin:8px 0">No transactions</div>
-            <div style="color:{C['muted']};font-size:.85rem">Try a different month or search term</div>
+        st.markdown(f"""<div class="card" style="text-align:center;padding:28px;margin-top:8px">
+            <div style="font-size:1.8rem">🔍</div>
+            <div style="font-weight:800;margin:6px 0">No transactions</div>
+            <div style="color:{C['muted']};font-size:.82rem">{"No results for "" + q + """ if q else "Try a different month"}</div>
         </div>""", unsafe_allow_html=True)
         return
 
+    # ── COMPACT TRANSACTION LIST
     for day, grp in sorted(
         filtered.sort_values("Date", ascending=False).groupby(filtered["Date"].dt.date),
         reverse=True
     ):
         day_total = grp["Amount"].sum()
-        dc = C["income"] if day_total >= 0 else C["expense"]
-        day_str = pd.Timestamp(day).strftime("%a, %d %b")
+        dc        = C["income"] if day_total >= 0 else C["expense"]
+        day_str   = pd.Timestamp(day).strftime("%a %d %b" + (" %Y" if day.year != datetime.today().year else ""))
         st.markdown(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 5px;padding:0 2px">
-            <div style="font-size:.68rem;font-weight:800;color:{C['muted']};letter-spacing:.8px;text-transform:uppercase">{day_str}</div>
-            <div class="mono" style="font-size:.78rem;color:{dc}">{"+" if day_total>=0 else "−"}{sym}{abs(day_total):,.0f}</div>
+        <div style="display:flex;justify-content:space-between;padding:5px 2px 2px;
+             border-bottom:1px solid {C['border']}">
+            <span style="font-size:.62rem;font-weight:800;color:{C['muted']};
+                   letter-spacing:.6px;text-transform:uppercase">{day_str}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:.7rem;
+                   color:{dc}">{"+" if day_total>=0 else "−"}{sym}{abs(day_total):,.0f}</span>
         </div>""", unsafe_allow_html=True)
 
         for _, row in grp.iterrows():
             amt = row["Amount"]
-            ac  = C["income"] if amt > 0 else C["expense"]
-            sg  = "+" if amt > 0 else "−"
+            ac  = C["income"] if amt>0 else C["expense"]
+            sg  = "+" if amt>0 else "−"
             ico = cat_icon(row["Category"])
-            ab  = '<span class="badge-auto">AUTO</span>' if str(row.get("AutoCat","")).lower() == "yes" else ""
-            pm  = f" · {row['PaymentMethod']}" if row.get("PaymentMethod") else ""
+            sub = str(row.get("Subcategory",""))
+            pm  = str(row.get("PaymentMethod",""))
+            auto_badge = ' <span class="badge-auto">A</span>' if str(row.get("AutoCat","")).lower()=="yes" else ""
+            merch = str(row["Merchant"])[:32]
 
             c1, c2 = st.columns([5,1])
             with c1:
                 st.markdown(f"""
-                <div class="txn-row">
-                    <div class="txn-icon">{ico}</div>
-                    <div style="flex:1;min-width:0;overflow:hidden">
-                        <div style="font-weight:700;font-size:.88rem">{row['Merchant']}</div>
-                        <div style="font-size:.7rem;color:{C['muted']};margin-top:2px">
-                            <span class="badge-cat">{row['Category']}</span>{pm} {ab}
+                <div style="display:flex;align-items:center;gap:8px;padding:5px 0;
+                     border-bottom:1px solid {C['surface2']}">
+                    <span style="font-size:.95rem;flex-shrink:0">{ico}</span>
+                    <div style="flex:1;min-width:0">
+                        <div style="font-weight:700;font-size:.8rem;white-space:nowrap;
+                             overflow:hidden;text-overflow:ellipsis">{merch}</div>
+                        <div style="font-size:.64rem;color:{C['muted']};margin-top:1px">
+                            {sub}{(" · " + pm) if pm else ""}{auto_badge}
                         </div>
                     </div>
-                    <div class="mono" style="color:{ac};font-size:.9rem;flex-shrink:0">{sg}{sym}{abs(amt):,.0f}</div>
+                    <div style="font-family:'JetBrains Mono',monospace;color:{ac};
+                         font-size:.82rem;flex-shrink:0;font-weight:600">
+                         {sg}{sym}{abs(amt):,.0f}</div>
                 </div>""", unsafe_allow_html=True)
             with c2:
                 if st.button("✏️", key=f"e_{row['RowID']}", help="Edit"):
-                    st.session_state.edit_txn = row.to_dict()
-                    st.rerun()
+                    st.session_state.edit_txn = row.to_dict(); st.rerun()
 
     if st.session_state.edit_txn:
         dlg_edit(st.session_state.edit_txn)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SCREEN — ADD
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_add():
     cats_df  = load_categories()
@@ -1030,37 +1100,34 @@ def screen_analytics():
     budgets  = load_budgets()
     sym      = settings.get("currency_symbol","₹")
 
-    st.markdown('<div class="page-title">Insights 📊</div>', unsafe_allow_html=True)
+    # ── TOP BAR
+    c_t, c_r = st.columns([5,1])
+    with c_t:
+        st.markdown('<div class="page-title">Insights 📊</div>', unsafe_allow_html=True)
+    with c_r:
+        if st.button("🔄", key="ana_reload", help="Reload"):
+            st.cache_data.clear(); st.rerun()
 
     if df.empty:
-        st.markdown(f"""<div class="card" style="text-align:center;padding:48px">
-            <div style="font-size:3rem">📊</div>
-            <div style="font-weight:800;font-size:1.1rem;margin:12px 0">No data yet</div>
-            <div style="color:{C['muted']}">Add transactions to unlock insights</div>
+        st.markdown(f"""<div class="card" style="text-align:center;padding:36px">
+            <div style="font-size:2.5rem">📊</div>
+            <div style="font-weight:800;margin:10px 0">No data yet</div>
         </div>""", unsafe_allow_html=True)
         return
 
     MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-
-    # Default to most recent month with data
-    if not df.empty:
-        latest_a = df.dropna(subset=["Date"]).sort_values("Date", ascending=False).iloc[0]["Date"]
-        def_am = latest_a.month - 1
-        min_ay = int(df["Date"].dt.year.min())
-        max_ay = int(df["Date"].dt.year.max())
-        years_a = list(range(min_ay, max_ay + 1))
-        def_ay_idx = years_a.index(latest_a.year) if latest_a.year in years_a else len(years_a)-1
-    else:
-        def_am = datetime.today().month - 1
-        years_a = list(range(datetime.today().year-2, datetime.today().year+1))
-        def_ay_idx = len(years_a)-1
+    # Auto-detect latest month
+    latest_a  = df.dropna(subset=["Date"]).sort_values("Date",ascending=False).iloc[0]["Date"]
+    def_am    = latest_a.month - 1
+    years_a   = sorted(df["Date"].dropna().dt.year.unique().astype(int).tolist())
+    def_ay_i  = years_a.index(latest_a.year) if latest_a.year in years_a else len(years_a)-1
 
     c1, c2 = st.columns(2)
     with c1:
         a_m  = st.selectbox("", MONTHS, index=def_am, key="a_m", label_visibility="collapsed")
         a_mn = MONTHS.index(a_m) + 1
     with c2:
-        a_y   = st.selectbox("", years_a, index=def_ay_idx, key="a_y", label_visibility="collapsed")
+        a_y = st.selectbox("", years_a, index=def_ay_i, key="a_y", label_visibility="collapsed")
 
     ms, me = month_range(int(a_y), int(a_mn))
     mdf    = df[(df["Date"].dt.date >= ms) & (df["Date"].dt.date <= me)]
@@ -1073,39 +1140,62 @@ def screen_analytics():
     exp_df["Abs"] = exp_df["Amount"].abs()
     total_exp = exp_df["Abs"].sum()
 
-    # ── DONUT
-    st.markdown('<div class="section-label">Spending by Category</div>', unsafe_allow_html=True)
-    cat_tot = exp_df.groupby("Category")["Abs"].sum().reset_index()
-    cat_tot.columns = ["Category","Amount"]
+    # ── CAT / SUBCAT TOGGLE
+    c_tog1, c_tog2 = st.columns(2)
+    with c_tog1:
+        st.markdown(f'<div class="{"pill-on" if st.session_state.cat_view=="Category" else "pill-off"}">', unsafe_allow_html=True)
+        if st.button("By Category", key="tog_cat"):
+            st.session_state.cat_view = "Category"; st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    with c_tog2:
+        st.markdown(f'<div class="{"pill-on" if st.session_state.cat_view=="Subcategory" else "pill-off"}">', unsafe_allow_html=True)
+        if st.button("By Subcategory", key="tog_sub"):
+            st.session_state.cat_view = "Subcategory"; st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    fig_d = px.pie(
-        cat_tot, values="Amount", names="Category",
-        hole=0.55,
-        color_discrete_sequence=["#7c6df8","#00c896","#ff4f6d","#f0a500","#58a6ff",
-                                  "#a78bfa","#34d399","#fb7185","#fbbf24","#60a5fa",
-                                  "#c084fc","#2dd4bf"],
-    )
-    fig_d.update_traces(textposition="outside", textinfo="label+percent", textfont_size=10)
+    group_col = st.session_state.cat_view  # "Category" or "Subcategory"
+
+    # ── DONUT
+    st.markdown('<div class="section-label">Spending Breakdown</div>', unsafe_allow_html=True)
+    grp_tot = exp_df.groupby(group_col)["Abs"].sum().reset_index()
+    grp_tot.columns = ["Label","Amount"]
+    grp_tot = grp_tot.sort_values("Amount", ascending=False)
+
+    PALETTE = ["#7c6df8","#00c896","#ff4f6d","#f0a500","#58a6ff",
+               "#a78bfa","#34d399","#fb7185","#fbbf24","#60a5fa","#c084fc","#2dd4bf"]
+
+    fig_d = px.pie(grp_tot, values="Amount", names="Label",
+                   hole=0.55, color_discrete_sequence=PALETTE)
+    fig_d.update_traces(textposition="outside", textinfo="label+percent", textfont_size=9)
     fig_d.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font_color=C["text"], showlegend=False,
-        margin=dict(l=4,r=4,t=8,b=4), height=270,
+        margin=dict(l=2,r=2,t=6,b=2), height=240,
     )
     st.plotly_chart(fig_d, use_container_width=True, config={"displayModeBar":False})
 
-    for _, row in cat_tot.sort_values("Amount", ascending=False).iterrows():
-        ico = cat_icon(row["Category"])
+    # ── CATEGORY / SUBCATEGORY TABLE
+    for i, (_, row) in enumerate(grp_tot.iterrows()):
+        lbl = str(row["Label"])
+        ico = cat_icon(lbl)
         pct = row["Amount"] / total_exp * 100
+        bar_w = (row["Amount"] / grp_tot["Amount"].max() * 100) if grp_tot["Amount"].max() > 0 else 0
         st.markdown(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;border-bottom:1px solid {C['border']}">
-            <div style="display:flex;align-items:center;gap:8px">
-                <span>{ico}</span>
-                <span style="font-weight:700;font-size:.88rem">{row['Category']}</span>
+        <div style="padding:5px 2px 4px;border-bottom:1px solid {C['border']}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
+                    <span style="font-size:.85rem">{ico}</span>
+                    <span style="font-weight:700;font-size:.8rem;white-space:nowrap;overflow:hidden;
+                           text-overflow:ellipsis">{lbl}</span>
+                </div>
+                <div style="text-align:right;flex-shrink:0;margin-left:8px">
+                    <span style="font-family:'JetBrains Mono',monospace;color:{C['expense']};
+                           font-size:.82rem;font-weight:600">{sym}{row['Amount']:,.0f}</span>
+                    <span style="color:{C['muted']};font-size:.65rem;margin-left:4px">{pct:.1f}%</span>
+                </div>
             </div>
-            <div style="text-align:right">
-                <div class="mono" style="color:{C['expense']};font-size:.88rem">{sym}{row['Amount']:,.0f}</div>
-                <div style="font-size:.68rem;color:{C['muted']}">{pct:.1f}%</div>
-            </div>
+            <div class="bar-wrap" style="height:4px"><div class="bar-fill"
+                 style="width:{bar_w:.0f}%;background:{PALETTE[i % len(PALETTE)]}"></div></div>
         </div>""", unsafe_allow_html=True)
 
     # ── BUDGET VS ACTUAL
@@ -1119,52 +1209,54 @@ def screen_analytics():
             bc     = C["expense"] if pct > 100 else C["warning"] if pct > 80 else C["income"]
             ico    = cat_icon(cat)
             st.markdown(f"""
-            <div class="card-sm">
-                <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-                    <span style="font-weight:700;font-size:.88rem">{ico} {cat}</span>
-                    <span class="mono" style="font-size:.78rem;color:{bc}">{sym}{actual:,.0f} / {sym}{bud:,.0f}</span>
+            <div style="padding:6px 2px;border-bottom:1px solid {C['border']}">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                    <span style="font-weight:700;font-size:.8rem">{ico} {cat}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:.75rem;color:{bc}">
+                        {sym}{actual:,.0f} / {sym}{bud:,.0f}</span>
                 </div>
-                <div class="bar-wrap"><div class="bar-fill" style="width:{pct:.0f}%;background:{bc}"></div></div>
+                <div class="bar-wrap" style="height:5px">
+                    <div class="bar-fill" style="width:{pct:.0f}%;background:{bc}"></div></div>
             </div>""", unsafe_allow_html=True)
 
-    # ── DAILY BARS
+    # ── DAILY BARS (fix x-axis to integer day numbers)
     st.markdown('<div class="section-label">Daily Spending</div>', unsafe_allow_html=True)
-    daily = exp_df.groupby(exp_df["Date"].dt.day)["Abs"].sum().reset_index()
-    daily.columns = ["Day","Amount"]
+    daily = exp_df.copy()
+    daily["Day"] = daily["Date"].dt.day
+    daily = daily.groupby("Day")["Abs"].sum().reset_index()
 
-    fig_b = go.Figure(go.Bar(
-        x=daily["Day"], y=daily["Amount"],
-        marker_color=C["primary"], opacity=0.85,
-    ))
+    fig_b = go.Figure(go.Bar(x=daily["Day"], y=daily["Abs"],
+                              marker_color=C["primary"], opacity=0.85))
     fig_b.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font_color=C["text"],
-        xaxis=dict(title="Day", gridcolor=C["border"], tickfont=dict(color=C["muted"],size=10)),
-        yaxis=dict(gridcolor=C["border"], tickfont=dict(color=C["muted"],size=10)),
-        margin=dict(l=4,r=4,t=4,b=4), height=200, showlegend=False,
+        xaxis=dict(title="Day of Month", gridcolor=C["border"], dtick=5,
+                   tickfont=dict(color=C["muted"],size=9)),
+        yaxis=dict(gridcolor=C["border"], tickfont=dict(color=C["muted"],size=9),
+                   tickprefix=sym),
+        margin=dict(l=2,r=2,t=2,b=2), height=180, showlegend=False,
     )
     st.plotly_chart(fig_b, use_container_width=True, config={"displayModeBar":False})
 
     # ── 6-MONTH TREND
     st.markdown('<div class="section-label">6-Month Trend</div>', unsafe_allow_html=True)
-    all_exp = df[df["Amount"] < 0].copy()
-    all_exp["Month"] = all_exp["Date"].dt.to_period("M")
-    trend   = all_exp.groupby("Month")["Amount"].sum().abs().reset_index().tail(6)
-    trend["MS"] = trend["Month"].astype(str)
-
+    all_exp = df[df["Amount"]<0].copy()
+    all_exp["Mon"] = all_exp["Date"].dt.to_period("M")
+    trend   = all_exp.groupby("Mon")["Amount"].sum().abs().reset_index().tail(6)
+    trend["MS"] = trend["Mon"].astype(str)
     fig_l = go.Figure(go.Scatter(
-        x=trend["MS"], y=trend["Amount"],
-        mode="lines+markers",
-        line=dict(color=C["primary"], width=2.5),
-        marker=dict(color=C["primary"], size=7),
+        x=trend["MS"], y=trend["Amount"], mode="lines+markers",
+        line=dict(color=C["primary"],width=2.5),
+        marker=dict(color=C["primary"],size=6),
         fill="tozeroy", fillcolor="rgba(124,109,248,0.1)",
     ))
     fig_l.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font_color=C["text"],
-        xaxis=dict(gridcolor=C["border"], tickfont=dict(color=C["muted"],size=10)),
-        yaxis=dict(gridcolor=C["border"], tickfont=dict(color=C["muted"],size=10)),
-        margin=dict(l=4,r=4,t=4,b=4), height=200, showlegend=False,
+        xaxis=dict(gridcolor=C["border"], tickfont=dict(color=C["muted"],size=9)),
+        yaxis=dict(gridcolor=C["border"], tickfont=dict(color=C["muted"],size=9),
+                   tickprefix=sym),
+        margin=dict(l=2,r=2,t=2,b=2), height=180, showlegend=False,
     )
     st.plotly_chart(fig_l, use_container_width=True, config={"displayModeBar":False})
 
@@ -1174,18 +1266,16 @@ def screen_analytics():
     for merchant, amt in tm.items():
         cnt = len(exp_df[exp_df["Merchant"]==merchant])
         st.markdown(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 2px;border-bottom:1px solid {C['border']}">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+             padding:6px 2px;border-bottom:1px solid {C['border']}">
             <div>
-                <div style="font-weight:700;font-size:.88rem">{merchant}</div>
-                <div style="font-size:.7rem;color:{C['muted']}">{cnt} transaction{'s' if cnt>1 else ''}</div>
+                <div style="font-weight:700;font-size:.8rem">{merchant[:30]}</div>
+                <div style="font-size:.65rem;color:{C['muted']}">{cnt} txn{"s" if cnt>1 else ""}</div>
             </div>
-            <div class="mono" style="color:{C['expense']};font-size:.9rem">{sym}{amt:,.0f}</div>
+            <div style="font-family:'JetBrains Mono',monospace;color:{C['expense']};font-size:.85rem;font-weight:600">
+                {sym}{amt:,.0f}</div>
         </div>""", unsafe_allow_html=True)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SCREEN — SETTINGS
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_settings():
     cats_df  = load_categories()
@@ -1361,6 +1451,7 @@ def main():
     inject_css()
     run_setup()
 
+    render_top_bar()
     nav = st.session_state.nav
     if   nav == "home":         screen_home()
     elif nav == "transactions": screen_transactions()
