@@ -48,7 +48,8 @@ SPREADSHEET_NAME = "ClearSpend"
 
 HEADERS = {
     "Transactions": ["RowID","Date","Merchant","Amount","Type","Category",
-                     "Subcategory","PaymentMethod","Tags","Notes","Source","AutoCat"],
+                     "Subcategory","PaymentMethod","Tags","Notes","Source","AutoCat",
+                     "RawTime","UPIRef","Account","OrderID","Remarks"],
     "Categories":   ["Category","Subcategory","Keywords","Icon"],
     "Budgets":      ["Category","MonthlyBudget"],
     "Settings":     ["Key","Value"],
@@ -507,8 +508,8 @@ def init_state():
         "nav":          "home",
         "edit_txn":     None,
         "filter_cat":   "All",
-        "f_month":      datetime.today().month,
-        "f_year":       datetime.today().year,
+        "f_month":      0,   # 0 = auto-detect from data
+        "f_year":       0,   # 0 = auto-detect from data
         "search":       "",
         "preview_rows": None,
         "setup_ok":     False,
@@ -749,16 +750,31 @@ def screen_transactions():
     # ── MONTH / YEAR
     c1, c2 = st.columns(2)
     MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    with c1:
+    # Auto-detect most recent month that has data
+    if (st.session_state.f_month == 0 or st.session_state.f_year == 0) and not df.empty:
+        latest = df.dropna(subset=["Date"]).sort_values("Date", ascending=False).iloc[0]["Date"]
+        st.session_state.f_month = int(latest.month)
+        st.session_state.f_year  = int(latest.year)
+    elif st.session_state.f_month == 0:
+        st.session_state.f_month = datetime.today().month
+        st.session_state.f_year  = datetime.today().year
+    # Build year list from actual data range
+    if not df.empty:
+        years = sorted(df["Date"].dropna().dt.year.unique().astype(int).tolist())
+    else:
+        years = list(range(datetime.today().year - 2, datetime.today().year + 1))
+    if st.session_state.f_year not in years:
+        st.session_state.f_year = years[-1]
+    c1t, c2t = st.columns(2)
+    with c1t:
         sel_m = st.selectbox("Month", MONTHS, index=st.session_state.f_month - 1, key="t_month",
                               label_visibility="collapsed")
         st.session_state.f_month = MONTHS.index(sel_m) + 1
-    with c2:
-        years = list(range(datetime.today().year - 2, datetime.today().year + 1))
+    with c2t:
         sel_y = st.selectbox("Year", years,
-                              index=years.index(st.session_state.f_year) if st.session_state.f_year in years else len(years)-1,
+                              index=years.index(st.session_state.f_year),
                               key="t_year", label_visibility="collapsed")
-        st.session_state.f_year = sel_y
+        st.session_state.f_year = int(sel_y)
 
     # ── FILTER
     filtered = df.copy()
@@ -1025,15 +1041,28 @@ def screen_analytics():
         return
 
     MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+    # Default to most recent month with data
+    if not df.empty:
+        latest_a = df.dropna(subset=["Date"]).sort_values("Date", ascending=False).iloc[0]["Date"]
+        def_am = latest_a.month - 1
+        min_ay = int(df["Date"].dt.year.min())
+        max_ay = int(df["Date"].dt.year.max())
+        years_a = list(range(min_ay, max_ay + 1))
+        def_ay_idx = years_a.index(latest_a.year) if latest_a.year in years_a else len(years_a)-1
+    else:
+        def_am = datetime.today().month - 1
+        years_a = list(range(datetime.today().year-2, datetime.today().year+1))
+        def_ay_idx = len(years_a)-1
+
     c1, c2 = st.columns(2)
     with c1:
-        a_m  = st.selectbox("", MONTHS, index=datetime.today().month-1, key="a_m", label_visibility="collapsed")
+        a_m  = st.selectbox("", MONTHS, index=def_am, key="a_m", label_visibility="collapsed")
         a_mn = MONTHS.index(a_m) + 1
     with c2:
-        years = list(range(datetime.today().year-2, datetime.today().year+1))
-        a_y   = st.selectbox("", years, index=len(years)-1, key="a_y", label_visibility="collapsed")
+        a_y   = st.selectbox("", years_a, index=def_ay_idx, key="a_y", label_visibility="collapsed")
 
-    ms, me = month_range(a_y, a_mn)
+    ms, me = month_range(int(a_y), int(a_mn))
     mdf    = df[(df["Date"].dt.date >= ms) & (df["Date"].dt.date <= me)]
     exp_df = mdf[mdf["Amount"] < 0].copy()
 
