@@ -219,83 +219,102 @@ def ensure_sheets():
 
 def _parse_dates(series):
     """
-    Parse dates from Sheets. Strict format list — no ambiguous inference.
-    Preferred stored format is DD/MM/YYYY. All formats normalised on read.
-    Order matters: DD/MM/YYYY is tried first so it always wins over MM/DD.
+    Parse date strings from Sheets into Timestamps.
+    Stored format: MM/DD/YYYY.
+    Also handles: DD/MM/YYYY (Code.gs legacy), ISO YYYY-MM-DD, dash separators,
+    2-digit years. Dashes anywhere are treated as slashes before parsing.
+    Ambiguous X/Y/YYYY where both parts ≤ 12: assumed MM/DD (stored format).
     """
+    import re as _re
     def parse_one(v):
         s = str(v).strip()
         if not s or s in ("nan","None","NaT",""):
             return pd.NaT
-        # Explicit formats only — no locale-based guessing
-        for fmt in (
-            "%d/%m/%Y",   # preferred: 17/03/2026
-            "%d-%m-%Y",   # 17-03-2026
-            "%d/%m/%y",   # 17/03/26  (2-digit year)
-            "%Y-%m-%d",   # 2026-03-17  (ISO — legacy imports)
-            "%Y/%m/%d",   # 2026/03/17
-        ):
-            try:
-                return pd.Timestamp(pd.to_datetime(s, format=fmt))
-            except Exception:
-                pass
-        return pd.NaT   # reject anything else — no ambiguous fallback
+        # Normalise: replace all dashes with slashes
+        s = s.replace("-", "/")
+        # YYYY/MM/DD  (ISO after dash→slash)
+        m = _re.match(r'^(\d{4})/(\d{1,2})/(\d{1,2})$', s)
+        if m:
+            try: return pd.Timestamp(f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}")
+            except: pass
+        # X/Y/YYYY or X/Y/YY
+        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2,4})$', s)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            yr = int(m.group(3))
+            if len(m.group(3)) == 2:
+                yr += 2000 if yr < 50 else 1900
+            if a > 12:
+                # a is definitely day, b is month → DD/MM source
+                try: return pd.Timestamp(f"{yr}-{b:02d}-{a:02d}")
+                except: pass
+            elif b > 12:
+                # b is definitely day, a is month → MM/DD stored format
+                try: return pd.Timestamp(f"{yr}-{a:02d}-{b:02d}")
+                except: pass
+            else:
+                # Both ≤ 12: assume MM/DD (stored format)
+                try: return pd.Timestamp(f"{yr}-{a:02d}-{b:02d}")
+                except: pass
+        return pd.NaT
     return series.apply(parse_one)
 
 def _normalise_date_str(s: str) -> str:
     """
-    Convert any date string to DD/MM/YYYY.
-    Handles: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY,
-             D/M/YYYY, MM/DD/YYYY (detected when month>12 after swap),
-             and pandas Timestamp strings.
-    Returns original string unchanged if it cannot be parsed.
+    Convert any incoming date string to MM/DD/YYYY.
+    Handles: DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, YYYY/MM/DD,
+             DD-MM-YYYY, X/Y/YY (2-digit year), dashes as separators.
+    Disambiguation rule: if first part > 12 → it is day (DD/MM source).
+                         if second part > 12 → it is day (MM/DD source).
+                         both ≤ 12 → treat as DD/MM (Code.gs writes DD/MM).
     """
+    import re as _re
     if not s or s in ("nan","None","NaT",""):
         return s
-    s = s.strip()
+    s = str(s).strip()
+    # Normalise: replace all dashes with slashes
+    s2 = s.replace("-", "/")
 
-    # Already DD/MM/YYYY
-    import re
-    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s)
+    # YYYY/MM/DD (ISO)
+    m = _re.match(r'^(\d{4})/(\d{1,2})/(\d{1,2})$', s2)
     if m:
-        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        # If day > 12 it's definitely DD/MM — store as is
-        # If month > 12 the values are swapped — flip them
-        if mo > 12 and d <= 12:
-            d, mo = mo, d  # swap
-        return f"{d:02d}/{mo:02d}/{y}"
+        return f"{int(m.group(2)):02d}/{int(m.group(3)):02d}/{m.group(1)}"
 
-    # YYYY-MM-DD (ISO)
-    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', s)
+    # X/Y/YYYY
+    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
     if m:
-        return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if a > 12:
+            # a = day, b = month → DD/MM → output MM/DD/YYYY
+            return f"{b:02d}/{a:02d}/{y}"
+        elif b > 12:
+            # b = day, a = month → already MM/DD → output as-is padded
+            return f"{a:02d}/{b:02d}/{y}"
+        else:
+            # Both ≤ 12: treat as DD/MM (Code.gs source) → output MM/DD/YYYY
+            return f"{b:02d}/{a:02d}/{y}"
 
-    # DD-MM-YYYY
-    m = re.match(r'^(\d{1,2})-(\d{1,2})-(\d{4})$', s)
+    # X/Y/YY (2-digit year)
+    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', s2)
     if m:
-        return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{m.group(3)}"
-
-    # DD/MM/YY (2-digit year)
-    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', s)
-    if m:
+        a, b = int(m.group(1)), int(m.group(2))
         yr = int(m.group(3)); yr += 2000 if yr < 50 else 1900
-        return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{yr}"
+        if a > 12:
+            return f"{b:02d}/{a:02d}/{yr}"
+        elif b > 12:
+            return f"{a:02d}/{b:02d}/{yr}"
+        else:
+            return f"{b:02d}/{a:02d}/{yr}"  # treat as DD/MM
 
-    # Pandas Timestamp or datetime string e.g. "2024-03-17 00:00:00"
-    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', s)
-    if m:
-        return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
-
-    # Last resort: try pandas
+    # Pandas fallback — last resort
     try:
         ts = pd.Timestamp(pd.to_datetime(s, dayfirst=True))
         if pd.notna(ts):
-            return ts.strftime("%d/%m/%Y")
+            return ts.strftime("%m/%d/%Y")
     except Exception:
         pass
 
     return s  # unchanged if nothing worked
-
 
 def _detect_date_issues(df: pd.DataFrame) -> dict:
     """
@@ -306,9 +325,9 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
     results = {
         "total":        len(df),
         "iso":          [],   # YYYY-MM-DD → needs converting
-        "short_year":   [],   # DD/MM/YY → needs 4-digit year
+        "short_year":   [],   # MM/DD/YY → needs 4-digit year
         "nat":          [],   # unparseable
-        "ok":           [],   # already DD/MM/YYYY
+        "ok":           [],   # already MM/DD/YYYY
         "suspicious":   [],   # day<=12 AND month<=12 → could be swapped
     }
     for _, row in df.iterrows():
@@ -1076,7 +1095,7 @@ def dlg_edit(txn):
         if st.button("💾 Update", use_container_width=True, type="primary"):
             if amount > 0 and merch.strip():
                 upd = {
-                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%d/%m/%Y"),
+                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%m/%d/%Y"),
                     "Merchant": merch.strip(),
                     "Type": "Expense" if "Expense" in ttype else "Income",
                     "Amount": -abs(amount) if "Expense" in ttype else abs(amount),
@@ -1512,7 +1531,7 @@ def screen_add():
             if amount > 0 and merch.strip():
                 _write_txn({
                     "RowID":         str(uuid.uuid4())[:8],
-                    "Date":          txn_date.strftime("%d/%m/%Y"),
+                    "Date":          txn_date.strftime("%m/%d/%Y"),
                     "Merchant":      merch.strip().title(),
                     "Amount":        -abs(amount) if is_exp else abs(amount),
                     "Type":          "Expense" if is_exp else "Income",
@@ -1579,7 +1598,7 @@ def screen_add():
                             signed = raw_a
                             tval   = "Income" if raw_a > 0 else "Expense"
                         cat, sub, conf = auto_cat(raw_m, cats_df2)
-                        # Normalise date to DD/MM/YYYY
+                        # Normalise date to MM/DD/YYYY
                         raw_date_str = str(r.get(date_col,"")).strip()
                         norm_date = _normalise_date_str(raw_date_str)
                         prev_rows.append({
@@ -2355,7 +2374,7 @@ def screen_settings():
         st.markdown(
             f"<div style='color:{C['muted']};font-size:.8rem;margin-bottom:10px'>"
             f"Scans all transactions for incorrectly stored dates. "
-            f"Preferred format is <b style='color:{C['text']}'>DD/MM/YYYY</b>. "
+            f"Preferred format is <b style='color:{C['text']}'>MM/DD/YYYY</b>. "
             f"Fixes ISO dates (YYYY-MM-DD), 2-digit years, and obviously swapped "
             f"month/day values (where month &gt; 12).</div>",
             unsafe_allow_html=True)
@@ -2385,7 +2404,7 @@ def screen_settings():
                 <div class="card-sm" style="text-align:center;padding:10px">
                     <div style="font-size:.6rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">✅ Correct</div>
                     <div class="mono" style="font-size:1.3rem;color:{C['income']}">{ok_c}</div>
-                    <div style="font-size:.62rem;color:{C['muted']}">DD/MM/YYYY</div>
+                    <div style="font-size:.62rem;color:{C['muted']}">MM/DD/YYYY</div>
                 </div>
                 <div class="card-sm" style="text-align:center;padding:10px">
                     <div style="font-size:.6rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">⚠️ Need Fix</div>
@@ -2401,18 +2420,18 @@ def screen_settings():
 
             # Breakdown
             breakdown = []
-            if iso_c  > 0: breakdown.append(f"**{iso_c}** stored as YYYY-MM-DD (ISO) → will convert to DD/MM/YYYY")
-            if sy_c   > 0: breakdown.append(f"**{sy_c}** stored with 2-digit year (DD/MM/YY) → will expand to 4-digit")
+            if iso_c  > 0: breakdown.append(f"**{iso_c}** stored as YYYY-MM-DD (ISO) → will convert to MM/DD/YYYY")
+            if sy_c   > 0: breakdown.append(f"**{sy_c}** stored with 2-digit year (MM/DD/YY) → will expand to 4-digit")
             if sus_c  > 0: breakdown.append(f"**{sus_c}** have month > 12 — clearly day/month swapped → will correct")
             if nat_c  > 0: breakdown.append(f"**{nat_c}** are blank or completely unparseable — will be left unchanged")
-            if ok_c   > 0: breakdown.append(f"**{ok_c}** are already correct DD/MM/YYYY — untouched")
+            if ok_c   > 0: breakdown.append(f"**{ok_c}** are already correct MM/DD/YYYY — untouched")
 
             for line in breakdown:
                 st.markdown(f"<div style='font-size:.8rem;padding:2px 4px'>• {line}</div>",
                             unsafe_allow_html=True)
 
             if needs_fix == 0 and nat_c == 0:
-                st.success("✅ All dates are already in DD/MM/YYYY format. Nothing to fix!")
+                st.success("✅ All dates are already in MM/DD/YYYY format. Nothing to fix!")
             else:
                 st.markdown(f"""
                 <div style="background:rgba(240,165,0,.08);border:1px solid rgba(240,165,0,.3);
@@ -2468,7 +2487,7 @@ def screen_settings():
                         st.cache_data.clear()
                         st.session_state["date_scan_report"] = None
                         if errors == 0:
-                            st.success(f"✅ Fixed {fix_count} dates. All now in DD/MM/YYYY format.")
+                            st.success(f"✅ Fixed {fix_count} dates. All now in MM/DD/YYYY format.")
                         else:
                             st.warning(f"Fixed {fix_count} dates. {errors} could not be updated (Sheets API limit — re-run to retry).")
                         st.rerun()
