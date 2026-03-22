@@ -155,19 +155,125 @@ def ensure_sheets():
 # ── CRUD ───────────────────────────────────────────────────────────────────────
 
 def _parse_dates(series):
+    """
+    Parse dates from Sheets. Strict format list — no ambiguous inference.
+    Preferred stored format is DD/MM/YYYY. All formats normalised on read.
+    Order matters: DD/MM/YYYY is tried first so it always wins over MM/DD.
+    """
     def parse_one(v):
         s = str(v).strip()
         if not s or s in ("nan","None","NaT",""):
             return pd.NaT
-        if len(s) == 10 and s[4] == "-":
-            try: return pd.Timestamp(s)
-            except: pass
-        for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%Y/%m/%d"):
-            try: return pd.Timestamp(pd.to_datetime(s, format=fmt))
-            except: pass
-        try: return pd.Timestamp(pd.to_datetime(s, dayfirst=True))
-        except: return pd.NaT
+        # Explicit formats only — no locale-based guessing
+        for fmt in (
+            "%d/%m/%Y",   # preferred: 17/03/2026
+            "%d-%m-%Y",   # 17-03-2026
+            "%d/%m/%y",   # 17/03/26  (2-digit year)
+            "%Y-%m-%d",   # 2026-03-17  (ISO — legacy imports)
+            "%Y/%m/%d",   # 2026/03/17
+        ):
+            try:
+                return pd.Timestamp(pd.to_datetime(s, format=fmt))
+            except Exception:
+                pass
+        return pd.NaT   # reject anything else — no ambiguous fallback
     return series.apply(parse_one)
+
+def _normalise_date_str(s: str) -> str:
+    """
+    Convert any date string to DD/MM/YYYY.
+    Handles: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY,
+             D/M/YYYY, MM/DD/YYYY (detected when month>12 after swap),
+             and pandas Timestamp strings.
+    Returns original string unchanged if it cannot be parsed.
+    """
+    if not s or s in ("nan","None","NaT",""):
+        return s
+    s = s.strip()
+
+    # Already DD/MM/YYYY
+    import re
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        # If day > 12 it's definitely DD/MM — store as is
+        # If month > 12 the values are swapped — flip them
+        if mo > 12 and d <= 12:
+            d, mo = mo, d  # swap
+        return f"{d:02d}/{mo:02d}/{y}"
+
+    # YYYY-MM-DD (ISO)
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', s)
+    if m:
+        return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+
+    # DD-MM-YYYY
+    m = re.match(r'^(\d{1,2})-(\d{1,2})-(\d{4})$', s)
+    if m:
+        return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{m.group(3)}"
+
+    # DD/MM/YY (2-digit year)
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', s)
+    if m:
+        yr = int(m.group(3)); yr += 2000 if yr < 50 else 1900
+        return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{yr}"
+
+    # Pandas Timestamp or datetime string e.g. "2024-03-17 00:00:00"
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', s)
+    if m:
+        return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+
+    # Last resort: try pandas
+    try:
+        ts = pd.Timestamp(pd.to_datetime(s, dayfirst=True))
+        if pd.notna(ts):
+            return ts.strftime("%d/%m/%Y")
+    except Exception:
+        pass
+
+    return s  # unchanged if nothing worked
+
+
+def _detect_date_issues(df: pd.DataFrame) -> dict:
+    """
+    Scan all Date values and classify them.
+    Returns dict with counts and lists of row IDs per issue type.
+    """
+    import re
+    results = {
+        "total":        len(df),
+        "iso":          [],   # YYYY-MM-DD → needs converting
+        "short_year":   [],   # DD/MM/YY → needs 4-digit year
+        "nat":          [],   # unparseable
+        "ok":           [],   # already DD/MM/YYYY
+        "suspicious":   [],   # day<=12 AND month<=12 → could be swapped
+    }
+    for _, row in df.iterrows():
+        rid  = str(row.get("RowID",""))
+        dval = str(row.get("Date","")).strip()
+        if not dval or dval in ("nan","None","NaT",""):
+            results["nat"].append(rid); continue
+
+        if re.match(r'^\d{4}-\d{2}-\d{2}', dval):
+            results["iso"].append(rid); continue
+
+        m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', dval)
+        if m:
+            results["short_year"].append(rid); continue
+
+        m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', dval)
+        if m:
+            d, mo = int(m.group(1)), int(m.group(2))
+            if mo > 12:
+                results["suspicious"].append(rid)  # definitely swapped
+            else:
+                results["ok"].append(rid)
+            continue
+
+        results["nat"].append(rid)
+
+    return results
+
 
 @st.cache_data(ttl=20)
 def load_transactions():
@@ -907,7 +1013,7 @@ def dlg_edit(txn):
         if st.button("💾 Update", use_container_width=True, type="primary"):
             if amount > 0 and merch.strip():
                 upd = {
-                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%Y-%m-%d"),
+                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%d/%m/%Y"),
                     "Merchant": merch.strip(),
                     "Type": "Expense" if "Expense" in ttype else "Income",
                     "Amount": -abs(amount) if "Expense" in ttype else abs(amount),
@@ -1343,7 +1449,7 @@ def screen_add():
             if amount > 0 and merch.strip():
                 _write_txn({
                     "RowID":         str(uuid.uuid4())[:8],
-                    "Date":          txn_date.strftime("%Y-%m-%d"),
+                    "Date":          txn_date.strftime("%d/%m/%Y"),
                     "Merchant":      merch.strip().title(),
                     "Amount":        -abs(amount) if is_exp else abs(amount),
                     "Type":          "Expense" if is_exp else "Income",
@@ -1410,8 +1516,11 @@ def screen_add():
                             signed = raw_a
                             tval   = "Income" if raw_a > 0 else "Expense"
                         cat, sub, conf = auto_cat(raw_m, cats_df2)
+                        # Normalise date to DD/MM/YYYY
+                        raw_date_str = str(r.get(date_col,"")).strip()
+                        norm_date = _normalise_date_str(raw_date_str)
                         prev_rows.append({
-                            "Date": str(r.get(date_col,"")),
+                            "Date": norm_date,
                             "Merchant": raw_m, "Amount": signed,
                             "Category": cat, "Subcategory": sub, "Type": tval,
                             "Account": imp_acct,
@@ -2177,6 +2286,136 @@ def screen_settings():
             st.session_state.email_parse_result = None
             st.rerun()
 
+    # ── DATE AUDIT & FIX ────────────────────────────────────────────────────
+    st.markdown('<div class="section-label">Date Audit & Fix</div>', unsafe_allow_html=True)
+    with st.expander("📅  Scan & Fix Existing Dates", expanded=False):
+        st.markdown(
+            f"<div style='color:{C['muted']};font-size:.8rem;margin-bottom:10px'>"
+            f"Scans all transactions for incorrectly stored dates. "
+            f"Preferred format is <b style='color:{C['text']}'>DD/MM/YYYY</b>. "
+            f"Fixes ISO dates (YYYY-MM-DD), 2-digit years, and obviously swapped "
+            f"month/day values (where month &gt; 12).</div>",
+            unsafe_allow_html=True)
+
+        if st.button("🔍 Run Date Scan", key="run_date_scan", use_container_width=True):
+            df_scan = load_transactions()
+            if df_scan.empty:
+                st.info("No transactions to scan.")
+            else:
+                report = _detect_date_issues(df_scan)
+                st.session_state["date_scan_report"] = report
+                st.rerun()
+
+        rpt = st.session_state.get("date_scan_report")
+        if rpt:
+            total = rpt["total"]
+            iso_c = len(rpt["iso"])
+            sy_c  = len(rpt["short_year"])
+            sus_c = len(rpt["suspicious"])
+            nat_c = len(rpt["nat"])
+            ok_c  = len(rpt["ok"])
+            needs_fix = iso_c + sy_c + sus_c
+
+            # Summary grid
+            st.markdown(f"""
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:10px 0">
+                <div class="card-sm" style="text-align:center;padding:10px">
+                    <div style="font-size:.6rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">✅ Correct</div>
+                    <div class="mono" style="font-size:1.3rem;color:{C['income']}">{ok_c}</div>
+                    <div style="font-size:.62rem;color:{C['muted']}">DD/MM/YYYY</div>
+                </div>
+                <div class="card-sm" style="text-align:center;padding:10px">
+                    <div style="font-size:.6rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">⚠️ Need Fix</div>
+                    <div class="mono" style="font-size:1.3rem;color:{C['warning'] if needs_fix>0 else C['muted']}">{needs_fix}</div>
+                    <div style="font-size:.62rem;color:{C['muted']}">rows affected</div>
+                </div>
+                <div class="card-sm" style="text-align:center;padding:10px">
+                    <div style="font-size:.6rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">❌ Unparseable</div>
+                    <div class="mono" style="font-size:1.3rem;color:{C['expense'] if nat_c>0 else C['muted']}">{nat_c}</div>
+                    <div style="font-size:.62rem;color:{C['muted']}">blank/invalid</div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+            # Breakdown
+            breakdown = []
+            if iso_c  > 0: breakdown.append(f"**{iso_c}** stored as YYYY-MM-DD (ISO) → will convert to DD/MM/YYYY")
+            if sy_c   > 0: breakdown.append(f"**{sy_c}** stored with 2-digit year (DD/MM/YY) → will expand to 4-digit")
+            if sus_c  > 0: breakdown.append(f"**{sus_c}** have month > 12 — clearly day/month swapped → will correct")
+            if nat_c  > 0: breakdown.append(f"**{nat_c}** are blank or completely unparseable — will be left unchanged")
+            if ok_c   > 0: breakdown.append(f"**{ok_c}** are already correct DD/MM/YYYY — untouched")
+
+            for line in breakdown:
+                st.markdown(f"<div style='font-size:.8rem;padding:2px 4px'>• {line}</div>",
+                            unsafe_allow_html=True)
+
+            if needs_fix == 0 and nat_c == 0:
+                st.success("✅ All dates are already in DD/MM/YYYY format. Nothing to fix!")
+            else:
+                st.markdown(f"""
+                <div style="background:rgba(240,165,0,.08);border:1px solid rgba(240,165,0,.3);
+                     border-radius:10px;padding:10px 12px;margin:10px 0;font-size:.78rem;
+                     color:{C['warning']}">
+                    ⚠️  This will update <b>{needs_fix} rows</b> in your Google Sheet directly.
+                    It cannot be undone. Make sure you have exported a backup CSV first.
+                </div>""", unsafe_allow_html=True)
+
+                cf1, cf2 = st.columns(2)
+                with cf1:
+                    if st.button(f"🔧 Fix {needs_fix} Dates", key="fix_dates_btn",
+                                 type="primary", use_container_width=True):
+                        df_fix  = load_transactions()
+                        ss      = get_ss()
+                        ws      = ss.worksheet("Transactions")
+                        all_vals = ws.get_all_values()
+                        hdrs     = all_vals[0]
+                        date_col_idx = hdrs.index("Date") + 1  # 1-based
+                        id_col_idx   = hdrs.index("RowID") + 1
+
+                        # Build RowID → sheet row map
+                        row_map = {}
+                        for i, row in enumerate(all_vals[1:], start=2):
+                            if row:
+                                row_map[row[id_col_idx - 1]] = i
+
+                        # IDs that need fixing
+                        to_fix_ids = set(rpt["iso"] + rpt["short_year"] + rpt["suspicious"])
+                        fix_count  = 0
+                        errors     = 0
+
+                        progress = st.progress(0, text="Fixing dates…")
+                        total_to_fix = len(to_fix_ids)
+
+                        for fi, (_, row) in enumerate(df_fix.iterrows()):
+                            rid = str(row.get("RowID",""))
+                            if rid not in to_fix_ids:
+                                continue
+                            raw_date = str(row.get("Date",""))
+                            new_date = _normalise_date_str(raw_date)
+                            if new_date != raw_date and rid in row_map:
+                                try:
+                                    ws.update_cell(row_map[rid], date_col_idx, new_date)
+                                    fix_count += 1
+                                except Exception:
+                                    errors += 1
+                            progress.progress(
+                                min((fi+1)/max(total_to_fix,1), 1.0),
+                                text=f"Fixed {fix_count}…"
+                            )
+
+                        st.cache_data.clear()
+                        st.session_state["date_scan_report"] = None
+                        if errors == 0:
+                            st.success(f"✅ Fixed {fix_count} dates. All now in DD/MM/YYYY format.")
+                        else:
+                            st.warning(f"Fixed {fix_count} dates. {errors} could not be updated (Sheets API limit — re-run to retry).")
+                        st.rerun()
+                with cf2:
+                    if st.button("✕ Clear Scan", key="clear_scan",
+                                 use_container_width=True):
+                        st.session_state["date_scan_report"] = None
+                        st.rerun()
+
+    
     # ── EXPORT
     st.markdown('<div class="section-label">Data</div>', unsafe_allow_html=True)
     with st.expander("📤  Export Transactions", expanded=False):
