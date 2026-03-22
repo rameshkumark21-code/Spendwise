@@ -50,7 +50,9 @@ HEADERS = {
     "EmailRules":   ["RuleName","Sender","SubjectContains","BodyTemplate",
                      "DateFormat","DefaultType","AccountLabel","Active",
                      "DryRun","LookbackDays","LastRun","LastImported"],
-    "ParseErrors":  ["Timestamp","RuleName","Sender","Subject","BodySnippet","ErrorReason"],
+    "ParseErrors":      ["Timestamp","RuleName","Sender","Subject","BodySnippet","ErrorReason"],
+    "MerchantAliases":  ["RawName","CanonicalName","LastUpdated"],
+    "TelegramSettings": ["Key","Value"],
 }
 
 PAYMENT_METHODS = ["UPI","Credit Card","Debit Card","Cash","Net Banking","Wallet","BNPL"]
@@ -242,6 +244,14 @@ def ensure_sheets():
     setts = ss.worksheet("Settings")
     if len(setts.get_all_values()) <= 1:
         setts.append_rows(DEFAULT_SETTINGS)
+    # V4: create MerchantAliases and TelegramSettings if missing
+    if "MerchantAliases" not in existing:
+        ws = ss.add_worksheet(title="MerchantAliases", rows=500, cols=3)
+        ws.append_row(HEADERS["MerchantAliases"])
+    if "TelegramSettings" not in existing:
+        ws = ss.add_worksheet(title="TelegramSettings", rows=50, cols=2)
+        ws.append_row(HEADERS["TelegramSettings"])
+
     # Seed default email rules on first run if sheet is empty
     email_ws = ss.worksheet("EmailRules")
     if len(email_ws.get_all_values()) <= 1 and DEFAULT_EMAIL_RULES:
@@ -584,6 +594,137 @@ def _bulk_update_merchant_cat(row_ids: list, new_cat: str, new_sub: str):
 
     st.cache_data.clear()
     return updated
+
+
+# ── MERCHANT ALIAS ─────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=120)
+def load_merchant_aliases() -> dict:
+    """Return {raw_lower: canonical} lookup dict."""
+    ss = get_ss()
+    try:
+        data = ss.worksheet("MerchantAliases").get_all_records()
+        return {str(r["RawName"]).lower().strip(): str(r["CanonicalName"]).strip()
+                for r in data if r.get("RawName") and r.get("CanonicalName")}
+    except Exception:
+        return {}
+
+def resolve_merchant(name: str, aliases: dict) -> str:
+    """Apply alias lookup, return canonical name or original."""
+    return aliases.get(str(name).lower().strip(), name)
+
+def save_merchant_alias(raw: str, canonical: str):
+    ss = get_ss()
+    ws = ss.worksheet("MerchantAliases")
+    all_v = ws.get_all_values()
+    # Update if exists
+    for i, row in enumerate(all_v[1:], start=2):
+        if row and str(row[0]).lower().strip() == raw.lower().strip():
+            ws.update_cell(i, 2, canonical)
+            ws.update_cell(i, 3, date.today().isoformat())
+            st.cache_data.clear()
+            return
+    ws.append_row([raw.strip(), canonical.strip(), date.today().isoformat()])
+    st.cache_data.clear()
+
+def delete_merchant_alias(raw: str):
+    ss = get_ss()
+    ws = ss.worksheet("MerchantAliases")
+    all_v = ws.get_all_values()
+    for i, row in enumerate(all_v[1:], start=2):
+        if row and str(row[0]).lower().strip() == raw.lower().strip():
+            ws.delete_rows(i); st.cache_data.clear(); return
+
+
+# ── TELEGRAM ─────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=120)
+def load_telegram_settings() -> dict:
+    ss = get_ss()
+    try:
+        data = ss.worksheet("TelegramSettings").get_all_records()
+        return {r["Key"]: r["Value"] for r in data if r.get("Key")}
+    except Exception:
+        return {}
+
+def save_telegram_setting(key: str, value: str):
+    ss = get_ss()
+    ws = ss.worksheet("TelegramSettings")
+    all_v = ws.get_all_values()
+    for i, row in enumerate(all_v[1:], start=2):
+        if row and row[0] == key:
+            ws.update_cell(i, 2, value)
+            st.cache_data.clear(); return
+    ws.append_row([key, value])
+    st.cache_data.clear()
+
+def send_telegram(bot_token: str, chat_id: str, message: str) -> tuple[bool, str]:
+    """Send a Telegram message. Returns (success, error_msg)."""
+    import urllib.request as _ur
+    import urllib.parse  as _up
+    try:
+        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = _up.urlencode({
+            "chat_id":    chat_id,
+            "text":       message,
+            "parse_mode": "HTML",
+        }).encode()
+        req  = _ur.Request(url, data=data)
+        resp = _ur.urlopen(req, timeout=8)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+def check_and_send_budget_alerts(df: pd.DataFrame, budgets: pd.DataFrame,
+                                  settings: dict, tg_cfg: dict):
+    """
+    Called on Insights load. Sends Telegram alert when a category exceeds
+    the budget_alert_pct threshold (default 80%). Only sends once per month
+    per category by recording last-alerted in TelegramSettings.
+    """
+    if not tg_cfg.get("bot_token") or not tg_cfg.get("chat_id"):
+        return
+    if budgets.empty or df.empty:
+        return
+
+    bot_token = tg_cfg["bot_token"]
+    chat_id   = tg_cfg["chat_id"]
+    threshold = float(tg_cfg.get("alert_pct", 80))
+    sym       = settings.get("currency_symbol", "₹")
+
+    now = datetime.today()
+    ms, me = month_range(now.year, now.month)
+    mdf    = df[(df["Date"].dt.date >= ms) & (df["Date"].dt.date <= me)]
+    exp_df = mdf[mdf["Amount"] < 0].copy()
+    if exp_df.empty:
+        return
+
+    exp_df["Abs"] = exp_df["Amount"].abs()
+    cat_totals    = exp_df.groupby("Category")["Abs"].sum()
+
+    alert_key_prefix = f"tg_alerted_{now.year}_{now.month:02d}_"
+
+    for _, brow in budgets.iterrows():
+        cat = str(brow["Category"])
+        bud = float(brow["MonthlyBudget"] or 0)
+        if bud <= 0 or cat not in cat_totals:
+            continue
+        actual = cat_totals[cat]
+        pct    = actual / bud * 100
+        if pct < threshold:
+            continue
+        # Check if already alerted this month
+        alert_key = alert_key_prefix + cat.replace(" ","_")[:20]
+        if tg_cfg.get(alert_key):
+            continue
+        ico = cat_icon(cat)
+        msg = (f"\U0001F6A8 <b>Budget Alert \u2014 {ico} {cat}</b>\n\n"
+               f"Spent <b>{sym}{actual:,.0f}</b> of {sym}{bud:,.0f} "
+               f"({pct:.0f}%) this month.\n"
+               f"Remaining: {sym}{max(bud-actual,0):,.0f}")
+        ok, _ = send_telegram(bot_token, chat_id, msg)
+        if ok:
+            save_telegram_setting(alert_key, "sent")
 
 
 def _write_email_rule(rule_dict):
@@ -1079,7 +1220,10 @@ def init_state():
         "edit_rule_name":     None,   # RuleName currently being edited
         "filter_sub_cat":     "All",
         "home_cat_view":      "Category",
-        "pending_bulk":       None,   # {merchant, cat, sub, skip_id} after cat edit
+        "pending_bulk":       None,
+        "review_misc_page":   False,  # show bulk-recategorise panel
+        "tg_test_result":     None,   # telegram test send result
+        "alias_search":       "",     # merchant alias search string
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1423,6 +1567,103 @@ def dlg_bulk_suggest():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  V4: REVIEW UNCATEGORISED DIALOG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@st.dialog("🗂️ Review Uncategorised Transactions", width="small")
+def dlg_review_misc():
+    """Bulk-recategorise all transactions in Others › Miscellaneous."""
+    df_all = load_transactions()
+    cats_sorted, sub_map = load_cat_freq()
+    settings = load_settings()
+    sym = settings.get("currency_symbol","₹")
+
+    misc = df_all[
+        (df_all["Category"].astype(str).str.strip() == "Others") |
+        (df_all["Subcategory"].astype(str).str.strip() == "Miscellaneous")
+    ].copy()
+
+    if misc.empty:
+        st.markdown(f"""
+        <div style="background:rgba(0,200,150,.08);border:1px solid rgba(0,200,150,.3);
+             border-radius:12px;padding:16px;text-align:center;color:{C['income']}">
+            🎉 No uncategorised transactions found!
+        </div>""", unsafe_allow_html=True)
+        if st.button("✕ Close", use_container_width=True):
+            st.session_state.review_misc_page = False; st.rerun()
+        return
+
+    st.markdown(f"""
+    <div style="font-size:.8rem;color:{C['muted']};margin-bottom:10px">
+        <b style="color:{C['text']}">{len(misc)}</b> transactions are in
+        Others › Miscellaneous. Group by merchant and assign categories below.
+    </div>""", unsafe_allow_html=True)
+
+    # Group by merchant for efficient bulk editing
+    merch_groups = misc.groupby("Merchant").agg(
+        count=("RowID","count"),
+        total=("Amount", lambda x: x.abs().sum()),
+        ids=("RowID", list)
+    ).reset_index().sort_values("total", ascending=False)
+
+    # Category selector (single for all, or per-merchant)
+    st.markdown(f"<div style='font-size:.72rem;color:{C['muted']};margin-bottom:4px'>Apply to all at once:</div>", unsafe_allow_html=True)
+    bulk_cat_idx = cats_sorted.index("Others") if "Others" in cats_sorted else 0
+    bulk_cat = st.selectbox("Category (bulk)", cats_sorted, index=bulk_cat_idx, key="rm_bulk_cat")
+    bulk_subs = sub_map.get(bulk_cat, [])
+    bulk_sub = st.selectbox("Subcategory (bulk)", bulk_subs if bulk_subs else ["Miscellaneous"], key="rm_bulk_sub")
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button(f"✅ Apply to All {len(misc)}", use_container_width=True, type="primary"):
+            all_ids = misc["RowID"].astype(str).tolist()
+            n = _bulk_update_merchant_cat(all_ids, bulk_cat, bulk_sub)
+            st.session_state.review_misc_page = False
+            st.success(f"✅ Updated {n} transactions → {bulk_cat} › {bulk_sub}")
+            st.rerun()
+    with b2:
+        if st.button("✕ Close", use_container_width=True):
+            st.session_state.review_misc_page = False; st.rerun()
+
+    st.markdown(f'<div class="section-label">By Merchant ({len(merch_groups)} groups)</div>', unsafe_allow_html=True)
+
+    for _, mg in merch_groups.head(20).iterrows():
+        mname = str(mg["Merchant"])
+        mcount = int(mg["count"])
+        mtotal = float(mg["total"])
+        mids   = [str(x) for x in mg["ids"]]
+
+        st.markdown(f"""
+        <div style="background:{C['surface2']};border:1px solid {C['border']};
+             border-radius:10px;padding:9px 12px;margin:5px 0">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <div style="font-weight:700;font-size:.82rem;flex:1;min-width:0;
+                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{mname[:35]}</div>
+                <div style="flex-shrink:0;margin-left:8px;font-size:.72rem;color:{C['muted']}">
+                    {mcount} txn · <span style="font-family:'JetBrains Mono',monospace;
+                    color:{C['expense']}">{sym}{mtotal:,.0f}</span>
+                </div>
+            </div>
+        </div>""", unsafe_allow_html=True)
+        mc1, mc2, mc3 = st.columns([3, 3, 1])
+        with mc1:
+            cat_k = f"rm_cat_{mname[:20]}"
+            mc_idx = cats_sorted.index("Others") if "Others" in cats_sorted else 0
+            sel_c = st.selectbox("", cats_sorted, index=mc_idx, key=cat_k,
+                                 label_visibility="collapsed")
+        with mc2:
+            sub_k  = f"rm_sub_{mname[:20]}"
+            msubs  = sub_map.get(sel_c, [])
+            sel_s  = st.selectbox("", msubs if msubs else ["Miscellaneous"],
+                                  key=sub_k, label_visibility="collapsed")
+        with mc3:
+            if st.button("✓", key=f"rm_apply_{mname[:20]}", help="Apply to this merchant"):
+                _bulk_update_merchant_cat(mids, sel_c, sel_s)
+                st.toast(f"✓ {mname[:20]} → {sel_c}", icon="✅")
+                st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  SCREEN — HOME
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1662,12 +1903,15 @@ def screen_transactions():
     settings = load_settings()
     sym      = settings.get("currency_symbol","₹")
 
-    c_t, c_r = st.columns([5,1])
+    c_t, c_r, c_misc = st.columns([5,1,1])
     with c_t:
         st.markdown('<div class="page-title">Spends 📋</div>', unsafe_allow_html=True)
     with c_r:
         if st.button("🔄", key="txn_reload", help="Reload data"):
             st.cache_data.clear(); st.rerun()
+    with c_misc:
+        if st.button("🗂️", key="btn_review_misc", help="Review uncategorised"):
+            st.session_state.review_misc_page = True; st.rerun()
 
     q = st.text_input("", placeholder="🔍  Search all transactions...", key="txn_q",
                       label_visibility="collapsed")
@@ -1857,6 +2101,9 @@ def screen_transactions():
 
     if st.session_state.pending_bulk:
         dlg_bulk_suggest()
+
+    if st.session_state.review_misc_page:
+        dlg_review_misc()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2119,10 +2366,49 @@ def screen_analytics():
 
     ms, me = month_range(int(a_y), int(a_mn))
     mdf    = df[(df["Date"].dt.date >= ms) & (df["Date"].dt.date <= me)]
-
-    # Apply account filter
     mdf    = filter_by_account(mdf, st.session_state.ana_acct_filter)
     exp_df = mdf[mdf["Amount"] < 0].copy()
+
+    # ── MONTH-OVER-MONTH COMPARISON CARD
+    prev_m  = int(a_mn) - 1 or 12
+    prev_y  = int(a_y) if int(a_mn) > 1 else int(a_y) - 1
+    pms, pme = month_range(prev_y, prev_m)
+    prev_df = filter_by_account(
+        df[(df["Date"].dt.date >= pms) & (df["Date"].dt.date <= pme) & (df["Amount"] < 0)],
+        st.session_state.ana_acct_filter
+    )
+    cur_tot  = exp_df["Amount"].abs().sum()
+    prev_tot = prev_df["Amount"].abs().sum()
+    delta    = cur_tot - prev_tot
+    delta_pct = (delta / prev_tot * 100) if prev_tot > 0 else 0
+    d_c   = C["expense"] if delta > 0 else C["income"]
+    d_arr = "▲" if delta > 0 else "▼"
+    MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+    mc1, mc2, mc3 = st.columns(3)
+    with mc1:
+        st.markdown(f"""<div class="card-sm" style="text-align:center;padding:10px">
+            <div style="font-size:.58rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">{a_m} {a_y}</div>
+            <div class="mono" style="font-size:1.1rem;color:{C['expense']}">{sym}{cur_tot:,.0f}</div>
+        </div>""", unsafe_allow_html=True)
+    with mc2:
+        st.markdown(f"""<div class="card-sm" style="text-align:center;padding:10px">
+            <div style="font-size:.58rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">{MONTHS_SHORT[prev_m-1]} {prev_y}</div>
+            <div class="mono" style="font-size:1.1rem;color:{C['muted']}">{sym}{prev_tot:,.0f}</div>
+        </div>""", unsafe_allow_html=True)
+    with mc3:
+        st.markdown(f"""<div class="card-sm" style="text-align:center;padding:10px">
+            <div style="font-size:.58rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:.8px">vs Last Month</div>
+            <div class="mono" style="font-size:1.1rem;color:{d_c}">{d_arr} {abs(delta_pct):.0f}%</div>
+        </div>""", unsafe_allow_html=True)
+
+    # ── TRIGGER BUDGET ALERTS (silent, non-blocking)
+    try:
+        tg_cfg = load_telegram_settings()
+        if tg_cfg.get("bot_token") and tg_cfg.get("chat_id"):
+            check_and_send_budget_alerts(df, budgets, settings, tg_cfg)
+    except Exception:
+        pass
 
     if exp_df.empty:
         filter_label = f"{st.session_state.ana_acct_filter} · " if st.session_state.ana_acct_filter != "All" else ""
@@ -2531,10 +2817,19 @@ def screen_settings():
                     _update_email_rule(r_nm, {"Active": "FALSE" if is_active else "TRUE"})
                     st.rerun()
             with bb:
-                dry_lbl = "🔴 Live" if is_dry else "🔬 Dry Run"
-                if st.button(dry_lbl, key=f"dry_{r_nm}", use_container_width=True):
-                    _update_email_rule(r_nm, {"DryRun": "FALSE" if is_dry else "TRUE"})
-                    st.rerun()
+                if is_dry:
+                    if st.button("🚀 Go Live", key=f"dry_{r_nm}",
+                                 use_container_width=True, type="primary",
+                                 help="Disable Dry Run — next trigger writes real transactions"):
+                        _update_email_rule(r_nm, {"DryRun": "FALSE"})
+                        st.success(f"✅ {r_nm} is now LIVE!")
+                        st.rerun()
+                else:
+                    if st.button("🔬 Dry Run", key=f"dry_{r_nm}",
+                                 use_container_width=True,
+                                 help="Switch back to test mode"):
+                        _update_email_rule(r_nm, {"DryRun": "TRUE"})
+                        st.rerun()
             with bc:
                 edit_lbl = "✕ Cancel" if is_editing else "✏️ Edit"
                 if st.button(edit_lbl, key=f"edit_{r_nm}", use_container_width=True):
@@ -2908,6 +3203,113 @@ def screen_settings():
                         st.rerun()
 
     
+    # ════════════════════════════════════════════════════════════════════════
+    #  V4: TELEGRAM ALERTS
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="section-label">Telegram Alerts</div>', unsafe_allow_html=True)
+    with st.expander("📱  Budget Alerts via Telegram", expanded=False):
+        tg_cfg = load_telegram_settings()
+        st.markdown(f"""
+        <div style="background:{C['surface2']};border-left:3px solid {C['info']};
+             border-radius:0 10px 10px 0;padding:10px 14px;margin-bottom:12px;
+             font-size:.78rem;color:{C['muted']};line-height:1.7">
+            <b style="color:{C['text']}">Setup:</b> Create a bot via
+            <span style="color:{C['info']}">@BotFather</span> on Telegram,
+            get the Bot Token. Then message the bot and get your Chat ID from
+            <span style="color:{C['info']}">@userinfobot</span>.<br>
+            Alerts fire when any category exceeds the threshold % of its monthly budget.
+        </div>""", unsafe_allow_html=True)
+
+        tg_token   = st.text_input("Bot Token",   value=tg_cfg.get("bot_token",""),
+                                    placeholder="123456:ABC-DEF...", key="tg_token",
+                                    type="password")
+        tg_chat_id = st.text_input("Chat ID",      value=tg_cfg.get("chat_id",""),
+                                    placeholder="Your numeric chat ID", key="tg_chat")
+        tg_pct     = st.slider("Alert when budget hits (%)",
+                                min_value=50, max_value=100, step=5,
+                                value=int(tg_cfg.get("alert_pct","80")),
+                                key="tg_pct")
+
+        tc1, tc2 = st.columns(2)
+        with tc1:
+            if st.button("💾 Save", key="tg_save", type="primary",
+                         use_container_width=True):
+                if tg_token.strip() and tg_chat_id.strip():
+                    save_telegram_setting("bot_token",  tg_token.strip())
+                    save_telegram_setting("chat_id",    tg_chat_id.strip())
+                    save_telegram_setting("alert_pct",  str(tg_pct))
+                    st.success("✅ Telegram settings saved!")
+                else:
+                    st.error("Enter both Bot Token and Chat ID.")
+        with tc2:
+            if st.button("🔔 Test", key="tg_test", use_container_width=True):
+                if tg_token.strip() and tg_chat_id.strip():
+                    ok, err = send_telegram(tg_token.strip(), tg_chat_id.strip(),
+                                            "✅ <b>ClearSpend test</b> — Telegram alerts are working!")
+                    st.session_state.tg_test_result = (ok, err)
+                    st.rerun()
+                else:
+                    st.error("Save settings first.")
+
+        if st.session_state.tg_test_result is not None:
+            ok, err = st.session_state.tg_test_result
+            if ok:
+                st.success("✅ Test message delivered!")
+            else:
+                st.error(f"❌ Failed: {err}")
+            if st.button("✕ Dismiss", key="tg_dismiss"):
+                st.session_state.tg_test_result = None; st.rerun()
+
+    # ════════════════════════════════════════════════════════════════════════
+    #  V4: MERCHANT ALIASES
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="section-label">Merchant Aliases</div>', unsafe_allow_html=True)
+    with st.expander("🏷️  Normalise Merchant Names", expanded=False):
+        st.markdown(f"""
+        <div style="font-size:.78rem;color:{C['muted']};margin-bottom:10px;line-height:1.6">
+            Map messy imported names to a clean canonical name.
+            e.g. "PAY*Hindustan Petroleu" → "Hindustan Petroleum".<br>
+            Code.gs applies these during import. Existing transactions are
+            not automatically renamed — use the Edit dialog for those.
+        </div>""", unsafe_allow_html=True)
+
+        aliases = load_merchant_aliases()
+        if aliases:
+            q_alias = st.text_input("🔍 Search", key="alias_search_box",
+                                     placeholder="Filter by raw name…",
+                                     label_visibility="collapsed")
+            filtered_aliases = {k: v for k, v in aliases.items()
+                                 if not q_alias or q_alias.lower() in k}
+            for raw, canonical in list(filtered_aliases.items())[:30]:
+                ac1, ac2, ac3 = st.columns([4, 4, 1])
+                with ac1:
+                    st.markdown(f"<div style='font-size:.78rem;color:{C['muted']};padding:6px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{raw[:30]}</div>", unsafe_allow_html=True)
+                with ac2:
+                    st.markdown(f"<div style='font-size:.78rem;font-weight:700;color:{C['text']};padding:6px 4px'>{canonical}</div>", unsafe_allow_html=True)
+                with ac3:
+                    if st.button("✕", key=f"del_alias_{raw[:20]}"):
+                        delete_merchant_alias(raw); st.rerun()
+        else:
+            st.markdown(f"<div style='color:{C['muted']};font-size:.82rem;padding:8px 0'>No aliases yet.</div>", unsafe_allow_html=True)
+
+        st.markdown(f"<div style='font-size:.7rem;font-weight:800;color:{C['muted']};margin:12px 0 4px;text-transform:uppercase;letter-spacing:1px'>Add Alias</div>", unsafe_allow_html=True)
+        with st.form("add_alias_form", clear_on_submit=True):
+            al1, al2 = st.columns(2)
+            with al1:
+                raw_in = st.text_input("Raw name (from import)",
+                                        placeholder="PAY*Hindustan Petroleu")
+            with al2:
+                can_in = st.text_input("Canonical name",
+                                        placeholder="Hindustan Petroleum")
+            if st.form_submit_button("➕ Add Alias", use_container_width=True,
+                                      type="primary"):
+                if raw_in.strip() and can_in.strip():
+                    save_merchant_alias(raw_in.strip(), can_in.strip())
+                    st.success(f"✅ Alias saved: {raw_in} → {can_in}")
+                    st.rerun()
+                else:
+                    st.error("Enter both names.")
+
     # ── EXPORT
     st.markdown('<div class="section-label">Data</div>', unsafe_allow_html=True)
     with st.expander("📤  Export Transactions", expanded=False):
