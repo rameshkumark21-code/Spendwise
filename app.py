@@ -162,6 +162,40 @@ DEFAULT_SETTINGS = [
 ]
 
 
+# ── DEFAULT EMAIL RULES (auto-seeded on first run) ─────────────────────────
+DEFAULT_EMAIL_RULES = [
+    # HDFC Credit Card alert
+    # Sample: Rs.926.31 is debited from your HDFC Bank Credit Card ending 7500 towards PAY*Hindustan Petroleu on 17 Mar, 2026 at 00:21:22.
+    ["HDFC Credit Card",
+     "alerts@hdfcbank.bank.in",
+     "debited via Credit Card",
+     "Rs.{amt} is debited from your {act} towards {tdetails} on {date}",
+     "use_email_date",
+     "Expense",
+     "HDFC CC",
+     "TRUE",
+     "TRUE",   # DryRun = TRUE — user must turn off after verifying
+     "2",
+     "",
+     ""],
+
+    # SBI Credit Card alert
+    # Sample: Rs.205.84 spent on your SBI Credit Card ending 4996 at SVMFUELSTATION on 26/09/25.
+    ["SBI Credit Card",
+     "onlinesbicard@sbicard.com",
+     "Transaction Alert from SBI Card",
+     "Rs.{amt} spent on your {skip} {act} at {tdetails} on {date}.",
+     "use_email_date",
+     "Expense",
+     "SBI CC",
+     "TRUE",
+     "TRUE",   # DryRun = TRUE — user must turn off after verifying
+     "2",
+     "",
+     ""],
+]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  GOOGLE SHEETS LAYER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -208,6 +242,11 @@ def ensure_sheets():
     setts = ss.worksheet("Settings")
     if len(setts.get_all_values()) <= 1:
         setts.append_rows(DEFAULT_SETTINGS)
+    # Seed default email rules on first run if sheet is empty
+    email_ws = ss.worksheet("EmailRules")
+    if len(email_ws.get_all_values()) <= 1 and DEFAULT_EMAIL_RULES:
+        email_ws.append_rows(DEFAULT_EMAIL_RULES)
+
     for title in ["Sheet1"]:
         try:
             ss.del_worksheet(ss.worksheet(title))
@@ -293,7 +332,7 @@ def _normalise_date_str(s: str) -> str:
     try:
         ts = pd.Timestamp(pd.to_datetime(s, dayfirst=True))
         if pd.notna(ts):
-            return ts.strftime("%m/%d/%Y")
+            return ts.strftime("%Y-%m-%d")
     except Exception:
         pass
 
@@ -1194,7 +1233,7 @@ def dlg_edit(txn):
                 cat_changed = (sel_cat != orig_cat or sel_sub != orig_sub)
 
                 upd = {
-                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%m/%d/%Y"),
+                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%Y-%m-%d"),
                     "Merchant": merch.strip(),
                     "Type": "Expense" if "Expense" in ttype else "Income",
                     "Amount": -abs(amount) if "Expense" in ttype else abs(amount),
@@ -1489,7 +1528,7 @@ def screen_home():
             <div class="mono" style="font-size:1.1rem;color:{s_color}">{s_rate:.1f}%</div>
         </div>""", unsafe_allow_html=True)
 
-    # ── SPENDING BREAKDOWN — mirrors Insights horizontal bar chart, tappable
+    # ── SPENDING BREAKDOWN — compact horizontal bars, tappable rows
     if not mdf.empty:
         exp_df = mdf[mdf["Amount"] < 0].copy()
         if not exp_df.empty:
@@ -1499,19 +1538,19 @@ def screen_home():
             PALETTE = ["#7c6df8","#00c896","#ff4f6d","#f0a500","#58a6ff",
                        "#a78bfa","#34d399","#fb7185","#fbbf24","#60a5fa","#c084fc","#2dd4bf"]
 
-            # ── Toggle Category / Subcategory
-            st.markdown(f'<div class="section-label">Spending Breakdown <span style="font-size:.63rem;color:{C["muted"]}">tap to explore</span></div>', unsafe_allow_html=True)
+            # Toggle
+            st.markdown(f'<div class="section-label">Spending Breakdown <span style="font-size:.6rem;color:{C["muted"]}">tap any row to explore</span></div>', unsafe_allow_html=True)
             tog_c1, tog_c2 = st.columns(2)
             with tog_c1:
                 is_cat = (st.session_state.home_cat_view == "Category")
                 st.markdown(f'<div class="{"pill-on" if is_cat else "pill-off"}">', unsafe_allow_html=True)
-                if st.button("By Category", key="home_tog_cat"):
+                if st.button("Category", key="home_tog_cat"):
                     st.session_state.home_cat_view = "Category"; st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
             with tog_c2:
                 is_sub = (st.session_state.home_cat_view == "Subcategory")
                 st.markdown(f'<div class="{"pill-on" if is_sub else "pill-off"}">', unsafe_allow_html=True)
-                if st.button("By Subcategory", key="home_tog_sub"):
+                if st.button("Subcategory", key="home_tog_sub"):
                     st.session_state.home_cat_view = "Subcategory"; st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1527,51 +1566,39 @@ def screen_home():
                 pct    = amt / total_exp_home * 100
                 bar_w  = (amt / max_amt * 100)
                 colour = PALETTE[i % len(PALETTE)]
-
-                # resolve icon — for subcategory use parent cat icon
                 if group_col == "Category":
                     ico = cat_icon(lbl)
                 else:
-                    parent_rows = exp_df[exp_df["Subcategory"] == lbl]["Category"]
-                    ico = cat_icon(parent_rows.iloc[0]) if not parent_rows.empty else "📂"
+                    pr = exp_df[exp_df["Subcategory"] == lbl]["Category"]
+                    ico = cat_icon(pr.iloc[0]) if not pr.empty else "📂"
 
-                # Drill-down: tapping navigates to Spends with filters pre-set
-                # Row is rendered as clickable via a narrow button column
-                col_bar, col_btn = st.columns([10, 1])
-                with col_bar:
+                # Compact row: icon | label + bar | amount + pct
+                col_info, col_amt = st.columns([6, 2])
+                with col_info:
                     st.markdown(f"""
-                    <div style="padding:5px 2px 4px;border-bottom:1px solid {C['border']}">
-                        <div style="display:flex;justify-content:space-between;
-                                    align-items:center;margin-bottom:3px">
-                            <div style="display:flex;align-items:center;gap:6px;
-                                        flex:1;min-width:0">
-                                <span style="font-size:.85rem">{ico}</span>
-                                <span style="font-weight:700;font-size:.8rem;
-                                       white-space:nowrap;overflow:hidden;
-                                       text-overflow:ellipsis">{lbl}</span>
-                            </div>
-                            <div style="text-align:right;flex-shrink:0;margin-left:8px">
-                                <span style="font-family:'JetBrains Mono',monospace;
-                                       color:{C['expense']};font-size:.82rem;
-                                       font-weight:600">{sym}{amt:,.0f}</span>
-                                <span style="color:{C['muted']};font-size:.65rem;
-                                       margin-left:4px">{pct:.1f}%</span>
-                            </div>
-                        </div>
-                        <div class="bar-wrap" style="height:5px">
-                            <div class="bar-fill"
-                                 style="width:{bar_w:.0f}%;background:{colour}">
+                    <div style="display:flex;align-items:center;gap:7px;padding:3px 0 0">
+                        <span style="font-size:.82rem;flex-shrink:0">{ico}</span>
+                        <div style="flex:1;min-width:0">
+                            <div style="font-weight:700;font-size:.78rem;white-space:nowrap;
+                                 overflow:hidden;text-overflow:ellipsis;color:{C['text']}">{lbl}</div>
+                            <div class="bar-wrap" style="height:4px;margin:3px 0 2px">
+                                <div class="bar-fill"
+                                     style="width:{bar_w:.0f}%;background:{colour}"></div>
                             </div>
                         </div>
                     </div>""", unsafe_allow_html=True)
-                with col_btn:
-                    # Invisible-label button for tap-to-explore
-                    st.markdown(f'<div style="opacity:0;height:0;overflow:hidden">', unsafe_allow_html=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
+                with col_amt:
+                    st.markdown(f"""
+                    <div style="text-align:right;padding:3px 0 0">
+                        <div style="font-family:'JetBrains Mono',monospace;color:{C['expense']};
+                             font-size:.78rem;font-weight:700">{sym}{amt:,.0f}</div>
+                        <div style="color:{C['muted']};font-size:.6rem">{pct:.1f}%</div>
+                    </div>""", unsafe_allow_html=True)
 
-                # Full-width tappable overlay via separate button row
-                st.markdown(f'<div class="home-cat-btn" style="margin-top:-52px;margin-bottom:6px;opacity:0">', unsafe_allow_html=True)
-                if st.button(lbl, key=f"home_cat_{i}_{lbl}", use_container_width=True):
+                # Invisible full-width tap target overlaid using zero-height button
+                st.markdown(f'<div style="margin-top:-36px;height:36px;overflow:hidden;">', unsafe_allow_html=True)
+                st.markdown(f'<div class="home-cat-btn" style="opacity:0;margin:0">', unsafe_allow_html=True)
+                if st.button(lbl, key=f"hb_{i}_{group_col[:3]}", use_container_width=True):
                     st.session_state.nav         = "transactions"
                     st.session_state.f_month     = now.month
                     st.session_state.f_year      = now.year
@@ -1581,14 +1608,13 @@ def screen_home():
                         st.session_state.filter_cat     = lbl
                         st.session_state.filter_sub_cat = "All"
                     else:
-                        parent_rows2 = exp_df[exp_df["Subcategory"] == lbl]["Category"]
-                        parent_cat   = parent_rows2.mode()[0] if not parent_rows2.empty else "All"
-                        st.session_state.filter_cat     = parent_cat
+                        pr2 = exp_df[exp_df["Subcategory"] == lbl]["Category"]
+                        st.session_state.filter_cat     = pr2.mode()[0] if not pr2.empty else "All"
                         st.session_state.filter_sub_cat = lbl
                     st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown('</div></div>', unsafe_allow_html=True)
 
-    # ── RECENT TRANSACTIONS
+        # ── RECENT TRANSACTIONS
     st.markdown('<div class="section-label">Recent</div>', unsafe_allow_html=True)
     if df.empty:
         st.markdown(f"""<div class="card" style="text-align:center;padding:36px">
@@ -1616,8 +1642,15 @@ def screen_home():
                 <div class="mono" style="color:{ac};font-size:.9rem;flex-shrink:0">{sg}{sym}{abs(amt):,.0f}</div>
             </div>""", unsafe_allow_html=True)
 
-        if st.button("View All Transactions →", use_container_width=True):
-            st.session_state.nav = "transactions"; st.rerun()
+        st.markdown(f'<div style="margin-top:10px">', unsafe_allow_html=True)
+        if st.button("View All Transactions →", use_container_width=True, type="primary"):
+            st.session_state.nav = "transactions"
+            st.session_state.filter_cat     = "All"
+            st.session_state.filter_sub_cat = "All"
+            st.session_state.f_month = 0
+            st.session_state.f_year  = 0
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1673,17 +1706,25 @@ def screen_transactions():
         if sel_acct != st.session_state.acct_filter:
             st.session_state.acct_filter = sel_acct; st.rerun()
 
-    # ── FILTER
+    # ── FILTER — always apply month + account, then search within result
     filtered = df.copy()
     if not filtered.empty:
-        if q:
-            filtered = filtered[filtered["Merchant"].str.contains(q, case=False, na=False)]
-        else:
-            ms, me = month_range(st.session_state.f_year, st.session_state.f_month)
-            filtered = filtered[(filtered["Date"].dt.date >= ms) & (filtered["Date"].dt.date <= me)]
+        # Step 1: always apply month/year scope
+        ms, me = month_range(st.session_state.f_year, st.session_state.f_month)
+        filtered = filtered[(filtered["Date"].dt.date >= ms) & (filtered["Date"].dt.date <= me)]
 
-        # Account filter
+        # Step 2: apply account filter
         filtered = filter_by_account(filtered, st.session_state.acct_filter)
+
+        # Step 3: if search query, match across all text fields (case-insensitive)
+        if q:
+            q_lower = q.lower().strip()
+            def row_matches(r):
+                return any(q_lower in str(r.get(col,"")).lower()
+                           for col in ["Merchant","Category","Subcategory",
+                                       "Notes","Tags","PaymentMethod"])
+            mask = filtered.apply(row_matches, axis=1)
+            filtered = filtered[mask]
 
     # ── SUMMARY STRIP
     if not filtered.empty:
@@ -1779,12 +1820,16 @@ def screen_transactions():
             ac   = C["income"] if amt>0 else C["expense"]
             sg   = "+" if amt>0 else "−"
             ico  = cat_icon(row["Category"])
-            sub  = str(row.get("Subcategory",""))
-            pm   = str(row.get("PaymentMethod",""))
-            tag  = str(row.get("Tags","")).strip()
+            sub   = str(row.get("Subcategory",""))
+            pm    = str(row.get("PaymentMethod",""))
+            tag   = str(row.get("Tags","")).strip()
+            notes = str(row.get("Notes","")).strip()
             auto_badge = ' <span class="badge-auto">A</span>' if str(row.get("AutoCat","")).lower()=="yes" else ""
             acct_badge = f" {account_badge_html(tag, inline=True)}" if tag else ""
             merch = str(row["Merchant"])[:32]
+            notes_html = (f'<div style="font-size:.62rem;color:{C["muted"]};margin-top:1px;'
+                          f'font-style:italic;white-space:nowrap;overflow:hidden;'
+                          f'text-overflow:ellipsis">{notes}</div>') if notes else ""
 
             c1, c2 = st.columns([5,1])
             with c1:
@@ -1797,7 +1842,7 @@ def screen_transactions():
                              overflow:hidden;text-overflow:ellipsis">{merch}</div>
                         <div style="font-size:.64rem;color:{C['muted']};margin-top:1px">
                             {sub}{(" · " + pm) if pm else ""}{acct_badge}{auto_badge}
-                        </div>
+                        </div>{notes_html}
                     </div>
                     <div style="font-family:'JetBrains Mono',monospace;color:{ac};
                          font-size:.82rem;flex-shrink:0;font-weight:600">
@@ -1896,7 +1941,7 @@ def screen_add():
             if amount > 0 and merch.strip():
                 _write_txn({
                     "RowID":         str(uuid.uuid4())[:8],
-                    "Date":          txn_date.strftime("%m/%d/%Y"),
+                    "Date":          txn_date.strftime("%Y-%m-%d"),
                     "Merchant":      merch.strip().title(),
                     "Amount":        -abs(amount) if is_exp else abs(amount),
                     "Type":          "Expense" if is_exp else "Income",
