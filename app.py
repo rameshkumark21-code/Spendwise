@@ -504,6 +504,49 @@ def _delete_txn(row_id):
             break
     st.cache_data.clear()
 
+def _bulk_update_merchant_cat(row_ids: list, new_cat: str, new_sub: str):
+    """
+    Update Category and Subcategory for a list of RowIDs in one pass.
+    Reads the sheet once, patches the relevant rows, writes back only changed cells.
+    Also sets AutoCat = 'no' on each updated row.
+    """
+    if not row_ids:
+        return 0
+    ss  = get_ss()
+    ws  = ss.worksheet("Transactions")
+    all_vals = ws.get_all_values()
+    hdrs     = all_vals[0]
+
+    try:
+        cat_col = hdrs.index("Category")    + 1  # 1-based
+        sub_col = hdrs.index("Subcategory") + 1
+        id_col  = hdrs.index("RowID")       + 1
+        ac_col  = hdrs.index("AutoCat")     + 1
+    except ValueError:
+        return 0
+
+    id_set    = set(row_ids)
+    updated   = 0
+    # Batch all updates — one update_cells call per column to minimise API calls
+    from gspread.utils import rowcol_to_a1
+    cat_updates = []
+    sub_updates = []
+    ac_updates  = []
+
+    for i, row in enumerate(all_vals[1:], start=2):
+        if row[id_col - 1] in id_set:
+            cat_updates.append({"range": rowcol_to_a1(i, cat_col), "values": [[new_cat]]})
+            sub_updates.append({"range": rowcol_to_a1(i, sub_col), "values": [[new_sub]]})
+            ac_updates.append( {"range": rowcol_to_a1(i, ac_col),  "values": [["no"]]})
+            updated += 1
+
+    if cat_updates:
+        ws.batch_update(cat_updates + sub_updates + ac_updates)
+
+    st.cache_data.clear()
+    return updated
+
+
 def _write_email_rule(rule_dict):
     ss = get_ss()
     ws = ss.worksheet("EmailRules")
@@ -995,8 +1038,9 @@ def init_state():
         "ana_acct_filter":  "All",
         "email_parse_result": None,
         "edit_rule_name":     None,   # RuleName currently being edited
-        "filter_sub_cat":     "All",  # subcategory filter on Spends
-        "home_cat_view":      "Category",  # Category or Subcategory on Home
+        "filter_sub_cat":     "All",
+        "home_cat_view":      "Category",
+        "pending_bulk":       None,   # {merchant, cat, sub, skip_id} after cat edit
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1145,6 +1189,10 @@ def dlg_edit(txn):
     with c1:
         if st.button("💾 Update", use_container_width=True, type="primary"):
             if amount > 0 and merch.strip():
+                orig_cat = str(txn.get("Category",""))
+                orig_sub = str(txn.get("Subcategory",""))
+                cat_changed = (sel_cat != orig_cat or sel_sub != orig_sub)
+
                 upd = {
                     "RowID": txn["RowID"], "Date": txn_dt.strftime("%m/%d/%Y"),
                     "Merchant": merch.strip(),
@@ -1156,7 +1204,16 @@ def dlg_edit(txn):
                 }
                 _update_txn(txn["RowID"], upd)
                 st.session_state.edit_txn = None
-                st.success("✅ Updated!")
+
+                # If category/subcategory changed, queue bulk-suggest for same merchant
+                if cat_changed:
+                    st.session_state.pending_bulk = {
+                        "merchant": merch.strip(),
+                        "cat":      sel_cat,
+                        "sub":      sel_sub,
+                        "skip_id":  txn["RowID"],
+                    }
+
                 st.rerun()
     with c2:
         if st.button("🗑️ Delete", use_container_width=True):
@@ -1167,6 +1224,163 @@ def dlg_edit(txn):
         if st.button("✕ Close", use_container_width=True):
             st.session_state.edit_txn = None
             st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BULK CATEGORY SUGGEST DIALOG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@st.dialog("🔄 Apply to Similar Transactions", width="small")
+def dlg_bulk_suggest():
+    """
+    Shown after dlg_edit when category/subcategory changed.
+    Lists all other transactions for the same merchant and lets the
+    user approve or reject applying the same category change to all of them.
+    """
+    pb       = st.session_state.pending_bulk
+    merchant = pb["merchant"]
+    new_cat  = pb["cat"]
+    new_sub  = pb["sub"]
+    skip_id  = pb["skip_id"]
+
+    df_all = load_transactions()
+    cats_sorted, sub_map = load_cat_freq()
+    settings = load_settings()
+    sym      = settings.get("currency_symbol", "₹")
+
+    # All other transactions for this merchant (exclude the one just edited)
+    others = df_all[
+        (df_all["Merchant"].str.strip().str.lower() == merchant.strip().lower()) &
+        (df_all["RowID"].astype(str) != str(skip_id))
+    ].copy()
+
+    st.markdown(f"""
+    <div style="background:{C['surface2']};border-left:3px solid {C['primary']};
+         border-radius:0 10px 10px 0;padding:10px 14px;margin-bottom:12px;font-size:.8rem">
+        <div style="font-weight:800;color:{C['text']};margin-bottom:3px">
+            {merchant}
+        </div>
+        <div style="color:{C['muted']}">
+            You just set this merchant to
+            <span style="color:{C['primary']};font-weight:700">{new_cat} › {new_sub}</span>.
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    if others.empty:
+        st.markdown(f"<div style='color:{C['muted']};font-size:.82rem;padding:8px 0'>"
+                    f"No other past transactions found for this merchant.</div>",
+                    unsafe_allow_html=True)
+        if st.button("✕ Close", use_container_width=True):
+            st.session_state.pending_bulk = None; st.rerun()
+        return
+
+    # Show how many are already in this category vs different
+    already = len(others[
+        (others["Category"] == new_cat) & (others["Subcategory"] == new_sub)
+    ])
+    different = len(others) - already
+
+    if different == 0:
+        st.markdown(f"""
+        <div style="background:rgba(0,200,150,.08);border:1px solid rgba(0,200,150,.3);
+             border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:.8rem;
+             color:{C['income']}">
+            ✅ All {len(others)} past transactions for this merchant are already
+            in <b>{new_cat} › {new_sub}</b>. Nothing to update.
+        </div>""", unsafe_allow_html=True)
+        if st.button("✕ Close", use_container_width=True):
+            st.session_state.pending_bulk = None; st.rerun()
+        return
+
+    st.markdown(f"""
+    <div style="font-size:.78rem;color:{C['muted']};margin-bottom:8px">
+        Found <b style="color:{C['text']}">{different}</b> past transaction(s) with a
+        different category. Approve to update them all.
+        {f"<span style='color:{C['income']}'>({already} already correct)</span>" if already > 0 else ""}
+    </div>""", unsafe_allow_html=True)
+
+    # Table of transactions that would be updated
+    to_update = others[
+        ~((others["Category"] == new_cat) & (others["Subcategory"] == new_sub))
+    ].sort_values("Date", ascending=False)
+
+    # Render compact table
+    st.markdown(f"""
+    <div style="background:{C['bg']};border:1px solid {C['border']};border-radius:10px;
+         overflow:hidden;margin-bottom:12px">
+        <div style="display:grid;grid-template-columns:2fr 2fr 1.5fr 1fr;
+             padding:6px 10px;background:{C['surface2']};
+             font-size:.6rem;font-weight:800;letter-spacing:.8px;
+             text-transform:uppercase;color:{C['muted']}">
+            <span>Category → New</span><span>Subcategory → New</span>
+            <span>Amount</span><span>Date</span>
+        </div>""", unsafe_allow_html=True)
+
+    for _, row in to_update.head(15).iterrows():
+        old_c   = str(row.get("Category",""))
+        old_s   = str(row.get("Subcategory",""))
+        amt     = row["Amount"]
+        ac      = C["income"] if amt > 0 else C["expense"]
+        sg      = "+" if amt > 0 else "−"
+        ds      = row["Date"].strftime("%d %b %y") if pd.notna(row["Date"]) else "—"
+        changed_c = old_c != new_cat
+        changed_s = old_s != new_sub
+
+        cat_html = (f'<span style="color:{C["muted"]};text-decoration:line-through;font-size:.62rem">'
+                    f'{old_c}</span><br><span style="color:{C["primary"]};font-weight:700">{new_cat}</span>'
+                    if changed_c else
+                    f'<span style="color:{C["muted"]}">{new_cat}</span>')
+        sub_html = (f'<span style="color:{C["muted"]};text-decoration:line-through;font-size:.62rem">'
+                    f'{old_s}</span><br><span style="color:{C["primary"]};font-weight:700">{new_sub}</span>'
+                    if changed_s else
+                    f'<span style="color:{C["muted"]}">{new_sub}</span>')
+
+        st.markdown(f"""
+        <div style="display:grid;grid-template-columns:2fr 2fr 1.5fr 1fr;
+             padding:7px 10px;border-top:1px solid {C['surface2']};
+             font-size:.75rem;align-items:center">
+            <span>{cat_html}</span>
+            <span>{sub_html}</span>
+            <span style="font-family:'JetBrains Mono',monospace;color:{ac};font-weight:600">
+                {sg}{sym}{abs(amt):,.0f}</span>
+            <span style="color:{C['muted']};font-size:.68rem">{ds}</span>
+        </div>""", unsafe_allow_html=True)
+
+    if len(to_update) > 15:
+        st.markdown(f"<div style='padding:6px 10px;font-size:.68rem;color:{C['muted']};border-top:1px solid {C['surface2']}'>"
+                    f"…and {len(to_update)-15} more</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Category / Subcategory confirmation dropdowns ────────────────────
+    st.markdown(f"<div style='font-size:.72rem;color:{C['muted']};margin-bottom:4px'>"
+                f"Confirm the category to apply to all {different} transaction(s):</div>",
+                unsafe_allow_html=True)
+
+    # Category dropdown pre-filled with new_cat
+    all_cats = cats_sorted + ["Other"]
+    cat_idx  = all_cats.index(new_cat) if new_cat in all_cats else 0
+    confirm_cat = st.selectbox("Category", all_cats, index=cat_idx, key="bulk_cat")
+
+    # Subcategory dropdown pre-filled with new_sub for confirmed category
+    all_subs = sub_map.get(confirm_cat, [])
+    sub_idx  = all_subs.index(new_sub) if new_sub in all_subs else 0
+    confirm_sub = st.selectbox("Subcategory", all_subs if all_subs else [new_sub],
+                               index=sub_idx, key="bulk_sub")
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── Approve / Reject ─────────────────────────────────────────────────
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("✅ Approve — Update All", use_container_width=True, type="primary"):
+            row_ids = to_update["RowID"].astype(str).tolist()
+            n = _bulk_update_merchant_cat(row_ids, confirm_cat, confirm_sub)
+            st.session_state.pending_bulk = None
+            st.success(f"✅ Updated {n} transaction(s) → {confirm_cat} › {confirm_sub}")
+            st.rerun()
+    with b2:
+        if st.button("✕ Reject — Keep as is", use_container_width=True):
+            st.session_state.pending_bulk = None; st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1552,6 +1766,9 @@ def screen_transactions():
 
     if st.session_state.edit_txn:
         dlg_edit(st.session_state.edit_txn)
+
+    if st.session_state.pending_bulk:
+        dlg_bulk_suggest()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
