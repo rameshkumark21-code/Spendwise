@@ -995,6 +995,8 @@ def init_state():
         "ana_acct_filter":  "All",
         "email_parse_result": None,
         "edit_rule_name":     None,   # RuleName currently being edited
+        "filter_sub_cat":     "All",  # subcategory filter on Spends
+        "home_cat_view":      "Category",  # Category or Subcategory on Home
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1273,24 +1275,56 @@ def screen_home():
             <div class="mono" style="font-size:1.1rem;color:{s_color}">{s_rate:.1f}%</div>
         </div>""", unsafe_allow_html=True)
 
-    # ── TOP CATEGORIES
+    # ── TOP CATEGORIES / SUBCATEGORIES with toggle
     if not mdf.empty:
-        st.markdown(f'<div class="section-label">Top Categories <span style="font-size:.65rem;color:{C["muted"]}">tap to explore</span></div>', unsafe_allow_html=True)
         exp_df = mdf[mdf["Amount"] < 0]
         if not exp_df.empty:
-            top = exp_df.groupby("Category")["Amount"].sum().abs().sort_values(ascending=False).head(5)
-            mx  = top.max()
-            for cat, amt in top.items():
-                ico = cat_icon(cat)
-                w   = (amt / mx * 100) if mx > 0 else 0
+            # Toggle row: Category | Subcategory
+            lbl_row = f'<div class="section-label" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span>Top Spending <span style="font-size:.65rem;color:{C["muted"]}">tap to explore</span></span></div>'
+            st.markdown(lbl_row, unsafe_allow_html=True)
+            tog_c1, tog_c2 = st.columns(2)
+            with tog_c1:
+                is_cat = (st.session_state.home_cat_view == "Category")
+                st.markdown(f'<div class="{"pill-on" if is_cat else "pill-off"}">', unsafe_allow_html=True)
+                if st.button("By Category", key="home_tog_cat"):
+                    st.session_state.home_cat_view = "Category"; st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+            with tog_c2:
+                is_sub = (st.session_state.home_cat_view == "Subcategory")
+                st.markdown(f'<div class="{"pill-on" if is_sub else "pill-off"}">', unsafe_allow_html=True)
+                if st.button("By Subcategory", key="home_tog_sub"):
+                    st.session_state.home_cat_view = "Subcategory"; st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            group_col = st.session_state.home_cat_view  # "Category" or "Subcategory"
+            top = (exp_df.groupby(group_col)["Amount"].sum().abs()
+                   .sort_values(ascending=False).head(6))
+            mx = top.max()
+            for item, amt in top.items():
+                ico = cat_icon(item) if group_col == "Category" else "📂"
+                if group_col == "Subcategory":
+                    # Try to get parent category for icon
+                    parent_rows = exp_df[exp_df["Subcategory"] == item]["Category"]
+                    if not parent_rows.empty:
+                        ico = cat_icon(parent_rows.iloc[0])
+                w = (amt / mx * 100) if mx > 0 else 0
                 st.markdown('<div class="home-cat-btn">', unsafe_allow_html=True)
-                if st.button(f"{ico}  {cat}   {sym}{amt:,.0f}", key=f"home_cat_{cat}", use_container_width=True):
+                if st.button(f"{ico}  {item}   {sym}{amt:,.0f}",
+                             key=f"home_cat_{item}", use_container_width=True):
                     st.session_state.nav        = "transactions"
-                    st.session_state.filter_cat  = cat
-                    st.session_state.f_month     = now.month
-                    st.session_state.f_year      = now.year
-                    st.session_state.search      = ""
+                    st.session_state.f_month    = now.month
+                    st.session_state.f_year     = now.year
+                    st.session_state.search     = ""
                     st.session_state.acct_filter = "All"
+                    if group_col == "Category":
+                        st.session_state.filter_cat     = item
+                        st.session_state.filter_sub_cat = "All"
+                    else:
+                        # Find parent category for the subcategory
+                        parent_rows = exp_df[exp_df["Subcategory"] == item]["Category"]
+                        parent_cat  = parent_rows.mode()[0] if not parent_rows.empty else "All"
+                        st.session_state.filter_cat     = parent_cat
+                        st.session_state.filter_sub_cat = item
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
                 st.markdown(f"""<div class="bar-wrap" style="margin:-2px 0 6px">
@@ -1431,10 +1465,31 @@ def screen_transactions():
                 on  = cat == st.session_state.filter_cat
                 st.markdown(f'<div class="{"pill-on" if on else "pill-off"}">', unsafe_allow_html=True)
                 if st.button(lbl, key=f"pill_{cat}"):
-                    st.session_state.filter_cat = cat; st.rerun()
+                    st.session_state.filter_cat     = cat
+                    st.session_state.filter_sub_cat = "All"  # reset sub on cat change
+                    st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
         if st.session_state.filter_cat != "All":
             filtered = filtered[filtered["Category"]==st.session_state.filter_cat]
+
+    # ── SUBCATEGORY PILLS (only when a category is selected)
+    if not filtered.empty and st.session_state.filter_cat != "All":
+        subs = filtered["Subcategory"].dropna().unique().tolist()
+        if len(subs) > 1:
+            sub_opts = ["All"] + sorted(subs)
+            if st.session_state.filter_sub_cat not in sub_opts:
+                st.session_state.filter_sub_cat = "All"
+            sub_cols = st.columns(min(len(sub_opts), 5))
+            for i, sub in enumerate(sub_opts[:5]):
+                with sub_cols[i]:
+                    sub_lbl = sub[:7] + "…" if sub != "All" and len(sub) > 8 else sub
+                    on_s = sub == st.session_state.filter_sub_cat
+                    st.markdown(f'<div class="{"pill-on" if on_s else "pill-off"}">', unsafe_allow_html=True)
+                    if st.button(sub_lbl, key=f"sub_pill_{sub}"):
+                        st.session_state.filter_sub_cat = sub; st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
+            if st.session_state.filter_sub_cat != "All":
+                filtered = filtered[filtered["Subcategory"]==st.session_state.filter_sub_cat]
 
     # ── EMPTY STATE
     if filtered.empty:
