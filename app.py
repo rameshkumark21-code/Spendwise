@@ -133,7 +133,8 @@ def ensure_sheets():
     existing = [ws.title for ws in ss.worksheets()]
     for name, hdrs in HEADERS.items():
         if name not in existing:
-            ws = ss.add_worksheet(title=name, rows=2000, cols=len(hdrs))
+            rows = 500 if name in ("EmailRules","ParseErrors") else 2000
+            ws = ss.add_worksheet(title=name, rows=rows, cols=len(hdrs))
             ws.append_row(hdrs)
         else:
             # Safely add any new columns that did not exist before
@@ -766,6 +767,7 @@ def init_state():
         "show_acct_breakdown": False,
         "ana_acct_filter":  "All",
         "email_parse_result": None,
+        "edit_rule_name":     None,   # RuleName currently being edited
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1767,282 +1769,413 @@ def screen_settings():
 
     # ════════════════════════════════════════════════════════════════════════
     #  EMAIL IMPORT RULES  — v2.0
-    #  Rules stored in EmailRules sheet.
-    #  Code.gs reads them on each trigger run and imports matching emails.
     # ════════════════════════════════════════════════════════════════════════
     st.markdown('<div class="section-label">Email Import Rules</div>', unsafe_allow_html=True)
 
-    # ── RUN NOW button
-    cn1, cn2 = st.columns([3, 1])
-    with cn1:
-        st.markdown(f"<div style='font-size:.8rem;color:{C['muted']};padding:6px 0'>"
-                    f"Rules are run automatically by Code.gs daily trigger. "
-                    f"Tap <b style='color:{C['text']}'>Queue Run Now</b> to flag an immediate run "
-                    f"— Code.gs will execute it on its next wake.</div>",
+    # ── HOW IT WORKS banner ──────────────────────────────────────────────────
+    st.markdown(f"""
+    <div style="background:{C['surface2']};border-left:3px solid {C['primary']};
+         border-radius:0 10px 10px 0;padding:10px 14px;margin-bottom:12px;font-size:.78rem;
+         color:{C['muted']};line-height:1.8">
+        <b style="color:{C['text']}">How this works:</b> Add one rule per bank/card.
+        Each rule tells the app how to read that bank's email alerts.
+        Code.gs runs daily and imports matching emails automatically.
+        Use the <b style="color:{C['text']}">Test Parse</b> button to verify before saving.<br>
+        <b style="color:{C['warning']}">Template placeholders:</b>
+        <span style="font-family:'JetBrains Mono',monospace;color:{C['primary']}">&nbsp;{{amt}}</span> amount
+        <span style="font-family:'JetBrains Mono',monospace;color:{C['warning']}">&nbsp;{{act}}</span> account text
+        <span style="font-family:'JetBrains Mono',monospace;color:{C['info']}">&nbsp;{{tdetails}}</span> merchant
+        <span style="font-family:'JetBrains Mono',monospace;color:{C['income']}">&nbsp;{{date}}</span> date
+        <span style="font-family:'JetBrains Mono',monospace;color:{C['muted']}">&nbsp;{{skip}}</span> ignore
+    </div>""", unsafe_allow_html=True)
+
+    # ── RUN NOW button ───────────────────────────────────────────────────────
+    rn1, rn2 = st.columns([4, 1])
+    with rn1:
+        st.markdown(f"<div style='font-size:.75rem;color:{C['muted']};padding:4px 0'>"
+                    f"Code.gs runs daily automatically. Tap to queue a run now.</div>",
                     unsafe_allow_html=True)
-    with cn2:
-        if st.button("▶ Queue Run Now", key="btn_run_now", type="primary",
+    with rn2:
+        if st.button("▶ Run Now", key="btn_run_now", type="primary",
                      use_container_width=True):
             try:
                 trigger_run_now()
-                st.success("✅ Run queued! Code.gs will pick it up shortly.")
+                st.success("✅ Queued! Code.gs will pick it up shortly.")
             except Exception as ex:
                 st.error(f"Could not queue: {ex}")
 
-    # ── IMPORT LOG
+    # ── IMPORT LOG ───────────────────────────────────────────────────────────
     with st.expander("📊  Recent Import Log", expanded=False):
         try:
             log_df = load_importlog()
             if log_df.empty:
-                st.markdown(f"<div style='color:{C['muted']};font-size:.82rem'>No import runs yet.</div>",
-                            unsafe_allow_html=True)
+                st.markdown(f"<div style='color:{C['muted']};font-size:.82rem;padding:8px 0'>"
+                            f"No import runs yet.</div>", unsafe_allow_html=True)
             else:
-                show_log = log_df.tail(10).iloc[::-1].reset_index(drop=True)
-                for _, lr in show_log.iterrows():
+                for _, lr in log_df.tail(10).iloc[::-1].iterrows():
                     imp_raw = str(lr.get("Imported","0"))
                     imp_num = ''.join(filter(str.isdigit, imp_raw)) or "0"
                     imp_c   = C["income"] if int(imp_num) > 0 else C["muted"]
                     ts      = str(lr.get("Timestamp",""))[:16]
                     skipped = str(lr.get("Skipped",""))
                     files   = str(lr.get("Files",""))
-                    rule_n  = str(lr.get("RuleName","")).strip()
                     st.markdown(f"""
                     <div style="display:flex;justify-content:space-between;align-items:center;
-                         padding:7px 4px;border-bottom:1px solid {C['border']};font-size:.77rem">
+                         padding:6px 2px;border-bottom:1px solid {C['border']};font-size:.75rem">
                         <div>
                             <div style="font-weight:700;color:{C['text']}">{ts}</div>
-                            <div style="color:{C['muted']};font-size:.68rem">
-                                {files}{(' · ' + rule_n) if rule_n else ''}
-                            </div>
+                            <div style="color:{C['muted']};font-size:.68rem">{files}</div>
                         </div>
                         <div style="text-align:right">
-                            <span style="color:{imp_c};font-family:'JetBrains Mono',monospace;
-                                   font-weight:700">+{imp_num}</span>
-                            <span style="color:{C['muted']};font-size:.68rem;margin-left:6px">
-                                {skipped} skipped</span>
+                            <span style="color:{imp_c};font-family:'JetBrains Mono',monospace;font-weight:700">+{imp_num}</span>
+                            <span style="color:{C['muted']};font-size:.68rem;margin-left:6px">{skipped} skipped</span>
                         </div>
                     </div>""", unsafe_allow_html=True)
         except Exception:
             st.info("Import log not available yet.")
 
-    # ── PARSE ERRORS
+    # ── PARSE ERRORS ─────────────────────────────────────────────────────────
     if not errors_df.empty:
         with st.expander(f"⚠️  Parse Errors ({len(errors_df)})", expanded=False):
             st.markdown(f"<div style='color:{C['muted']};font-size:.78rem;margin-bottom:8px'>"
-                        f"These emails matched the sender/subject filter but the body template "
-                        f"could not extract data. Refine the template below.</div>",
-                        unsafe_allow_html=True)
-            for _, er in errors_df.tail(10).iloc[::-1].iterrows():
-                ts       = str(er.get("Timestamp",""))[:16]
-                rule_n   = str(er.get("RuleName",""))
-                reason   = str(er.get("ErrorReason",""))
-                snippet  = str(er.get("BodySnippet",""))[:120]
+                        f"These emails matched sender/subject but body parse failed. "
+                        f"Refine the template.</div>", unsafe_allow_html=True)
+            for _, er in errors_df.tail(8).iloc[::-1].iterrows():
+                ts      = str(er.get("Timestamp",""))[:16]
+                rule_n  = str(er.get("RuleName",""))
+                reason  = str(er.get("ErrorReason",""))
+                snippet = str(er.get("BodySnippet",""))[:100]
                 st.markdown(f"""
                 <div style="background:rgba(255,79,109,.07);border:1px solid rgba(255,79,109,.25);
-                     border-radius:10px;padding:10px 12px;margin:4px 0;font-size:.75rem">
-                    <div style="display:flex;justify-content:space-between">
+                     border-radius:10px;padding:10px 12px;margin:4px 0;font-size:.74rem">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:3px">
                         <span style="font-weight:800;color:{C['expense']}">{rule_n}</span>
                         <span style="color:{C['muted']}">{ts}</span>
                     </div>
-                    <div style="color:{C['warning']};margin:3px 0">{reason}</div>
+                    <div style="color:{C['warning']};margin-bottom:3px">{reason}</div>
                     <div style="color:{C['muted']};font-family:'JetBrains Mono',monospace;
-                         font-size:.65rem;word-break:break-all">{snippet}…</div>
+                         font-size:.63rem;word-break:break-all">{snippet}…</div>
                 </div>""", unsafe_allow_html=True)
             if st.button("🗑️ Clear Parse Errors", key="clear_parse_err"):
                 try:
                     ss = get_ss(); ws = ss.worksheet("ParseErrors")
                     ws.clear(); ws.append_row(HEADERS["ParseErrors"])
-                    st.cache_data.clear(); st.success("✅ Cleared.")
-                    st.rerun()
+                    st.cache_data.clear(); st.success("✅ Cleared."); st.rerun()
                 except Exception as ex:
                     st.error(str(ex))
 
-    # ── EXISTING RULES LIST
-    with st.expander("📋  Active Email Rules", expanded=not rules_df.empty):
-        if rules_df.empty:
-            st.markdown(f"<div style='color:{C['muted']};font-size:.83rem;padding:8px 0'>"
-                        f"No rules yet. Add one below.</div>", unsafe_allow_html=True)
-        else:
-            for _, rule in rules_df.iterrows():
-                is_active  = str(rule.get("Active","TRUE")).upper() in ("TRUE","YES","1")
-                is_dry     = str(rule.get("DryRun","FALSE")).upper()  in ("TRUE","YES","1")
-                acct_lbl   = str(rule.get("AccountLabel","")).strip()
-                lookback   = str(rule.get("LookbackDays","2")).strip()
-                last_run   = str(rule.get("LastRun","—")).strip()[:16]
-                last_imp   = str(rule.get("LastImported","—")).strip()
-                active_c   = C["income"] if is_active else C["muted"]
+    # ── EXISTING RULES — with Edit inline ───────────────────────────────────
+    st.markdown(f'<div class="section-label">Your Rules ({len(rules_df)})</div>',
+                unsafe_allow_html=True)
 
-                st.markdown(f"""
-                <div style="background:{C['surface2']};border:1px solid {C['border']};
-                     border-radius:12px;padding:12px 14px;margin:6px 0">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start">
-                        <div style="flex:1;min-width:0">
-                            <div style="font-weight:800;font-size:.9rem">{rule['RuleName']}</div>
-                            <div style="font-size:.7rem;color:{C['muted']};margin-top:2px">
-                                From: <span style="color:{C['info']}">{rule['Sender']}</span>
-                            </div>
-                            <div style="font-size:.7rem;color:{C['muted']}">
-                                Subject: <em>{rule.get('SubjectContains','')}</em>
-                            </div>
-                            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center">
-                                {(account_badge_html(acct_lbl, inline=True)) if acct_lbl else ''}
-                                <span style="font-size:.62rem;color:{C['muted']}">📅 {lookback}d lookback</span>
-                                {('<span style="font-size:.62rem;color:' + C['warning'] + '">🔬 DRY RUN</span>') if is_dry else ''}
-                            </div>
-                        </div>
-                        <div style="text-align:right;flex-shrink:0;margin-left:10px">
-                            <div style="font-size:.65rem;font-weight:800;color:{active_c}">
-                                {'● ACTIVE' if is_active else '○ OFF'}
-                            </div>
-                            <div style="font-size:.6rem;color:{C['muted']};margin-top:4px">
-                                Last run: {last_run}
-                            </div>
-                            <div style="font-size:.6rem;color:{C['income'] if last_imp.isdigit() and int(last_imp)>0 else C['muted']}">
-                                +{last_imp} imported
-                            </div>
-                        </div>
-                    </div>
-                    <div style="margin-top:8px;font-size:.66rem;color:{C['muted']};
-                         background:{C['bg']};border-radius:8px;padding:6px 10px;
-                         font-family:'JetBrains Mono',monospace;line-height:1.6;
-                         word-break:break-all">{rule.get('BodyTemplate','')}</div>
-                </div>""", unsafe_allow_html=True)
-
-                ca, cb, cc = st.columns(3)
-                with ca:
-                    tog_lbl = "⏸ Disable" if is_active else "▶ Enable"
-                    if st.button(tog_lbl, key=f"tog_{rule['RuleName']}",
-                                 use_container_width=True):
-                        _update_email_rule(rule["RuleName"],
-                                           {"Active": "FALSE" if is_active else "TRUE"})
-                        st.rerun()
-                with cb:
-                    new_dry = "FALSE" if is_dry else "TRUE"
-                    dry_lbl = "🔴 Live mode" if is_dry else "🔬 Dry run"
-                    if st.button(dry_lbl, key=f"dry_{rule['RuleName']}",
-                                 use_container_width=True):
-                        _update_email_rule(rule["RuleName"], {"DryRun": new_dry})
-                        st.rerun()
-                with cc:
-                    if st.button("🗑️ Delete", key=f"del_{rule['RuleName']}",
-                                 use_container_width=True):
-                        _delete_email_rule(rule["RuleName"])
-                        st.rerun()
-
-    # ── ADD NEW RULE
-    with st.expander("➕  Add New Email Rule", expanded=False):
+    if rules_df.empty:
         st.markdown(f"""
-        <div style="background:{C['surface2']};border-radius:10px;padding:10px 12px;
-             font-size:.78rem;color:{C['muted']};line-height:1.8;margin-bottom:10px">
-            Use placeholders in Body Template:<br>
-            <span style="color:{C['primary']};font-family:'JetBrains Mono',monospace">{{amt}}</span> amount &nbsp;
-            <span style="color:{C['warning']};font-family:'JetBrains Mono',monospace">{{act}}</span> account text &nbsp;
-            <span style="color:{C['info']};font-family:'JetBrains Mono',monospace">{{tdetails}}</span> merchant &nbsp;
-            <span style="color:{C['income']};font-family:'JetBrains Mono',monospace">{{date}}</span> date &nbsp;
-            <span style="color:{C['muted']};font-family:'JetBrains Mono',monospace">{{skip}}</span> discard<br>
-            <b>HDFC:</b> <span style="font-family:'JetBrains Mono',monospace;font-size:.7rem">
-            Rs.{{amt}} is debited from your {{act}} towards {{tdetails}} on {{date}}</span><br>
-            <b>SBI:</b> <span style="font-family:'JetBrains Mono',monospace;font-size:.7rem">
-            Rs.{{amt}} spent on your {{skip}} {{act}} at {{tdetails}} on {{date}}.</span>
+        <div class="card-sm" style="text-align:center;padding:20px;color:{C['muted']};font-size:.82rem">
+            No rules yet — add your first rule below ↓
         </div>""", unsafe_allow_html=True)
+    else:
+        for _, rule in rules_df.iterrows():
+            r_nm       = str(rule.get("RuleName",""))
+            is_active  = str(rule.get("Active","TRUE")).upper() in ("TRUE","YES","1")
+            is_dry     = str(rule.get("DryRun","FALSE")).upper() in ("TRUE","YES","1")
+            acct_lbl   = str(rule.get("AccountLabel","")).strip()
+            lookback   = str(rule.get("LookbackDays","2")).strip()
+            last_run   = str(rule.get("LastRun","—")).strip()[:16]
+            last_imp   = str(rule.get("LastImported","—")).strip()
+            active_c   = C["income"] if is_active else C["muted"]
+            is_editing = (st.session_state.edit_rule_name == r_nm)
 
-        r_name    = st.text_input("Rule Name *",        placeholder="e.g. HDFC Credit Card", key="nr_name")
-        r_sender  = st.text_input("Sender Email *",     placeholder="alerts@hdfcbank.bank.in", key="nr_sender")
-        r_subject = st.text_input("Subject Contains",   placeholder="debited via Credit Card", key="nr_subject")
-        r_template= st.text_area("Body Template *",
-                      placeholder="Rs.{amt} is debited from your {act} towards {tdetails} on {date}",
-                      key="nr_template", height=80, label_visibility="visible")
+            # ── Rule card ──────────────────────────────────────────────────
+            st.markdown(f"""
+            <div style="background:{C['surface2']};border:1px solid {C['border']};
+                 border-radius:12px;padding:12px 14px;margin:6px 0">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                    <div style="flex:1;min-width:0">
+                        <div style="font-weight:800;font-size:.9rem">{r_nm}</div>
+                        <div style="font-size:.7rem;color:{C['muted']};margin-top:2px">
+                            📧 <span style="color:{C['info']}">{rule.get('Sender','')}</span>
+                        </div>
+                        <div style="font-size:.7rem;color:{C['muted']}">
+                            Subject: <em>{rule.get('SubjectContains','')}</em>
+                        </div>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px;align-items:center">
+                            {account_badge_html(acct_lbl, inline=True) if acct_lbl else ''}
+                            <span style="font-size:.6rem;color:{C['muted']}">📅 {lookback}d lookback</span>
+                            {f'<span style="font-size:.6rem;color:{C["warning"]}">🔬 DRY RUN</span>' if is_dry else ''}
+                        </div>
+                    </div>
+                    <div style="text-align:right;flex-shrink:0;margin-left:10px">
+                        <div style="font-size:.65rem;font-weight:800;color:{active_c}">
+                            {'● ACTIVE' if is_active else '○ OFF'}
+                        </div>
+                        <div style="font-size:.6rem;color:{C['muted']};margin-top:3px">
+                            Last: {last_run or '—'}
+                        </div>
+                        <div style="font-size:.6rem;color:{C['income'] if last_imp.isdigit() and int(last_imp)>0 else C['muted']}">
+                            +{last_imp} imported
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:8px;font-size:.64rem;color:{C['muted']};
+                     background:{C['bg']};border-radius:7px;padding:5px 9px;
+                     font-family:'JetBrains Mono',monospace;line-height:1.6;
+                     word-break:break-all">{rule.get('BodyTemplate','')}</div>
+            </div>""", unsafe_allow_html=True)
 
-        c_a, c_b = st.columns(2)
-        with c_a:
-            r_lookback = st.number_input("Lookback Days", value=2, min_value=1,
-                                          max_value=30, step=1, key="nr_lookback",
-                                          help="How many days back Code.gs scans Gmail for this rule")
-            r_deftype  = st.selectbox("Transaction Type",
-                                       ["Debit (Expense)","Credit (Income)"], key="nr_deftype")
-        with c_b:
-            r_acct  = st.text_input("Account Label *",
-                                     placeholder="HDFC CC 7500  /  SBI CC 4996", key="nr_acct",
-                                     help="Stored in Tags column — used for account filtering")
-            r_dry   = st.toggle("🔬 Dry Run (test without saving)", value=False, key="nr_dry")
+            # Action buttons row
+            ba, bb, bc, bd = st.columns(4)
+            with ba:
+                tog_lbl = "⏸ Disable" if is_active else "▶ Enable"
+                if st.button(tog_lbl, key=f"tog_{r_nm}", use_container_width=True):
+                    _update_email_rule(r_nm, {"Active": "FALSE" if is_active else "TRUE"})
+                    st.rerun()
+            with bb:
+                dry_lbl = "🔴 Live" if is_dry else "🔬 Dry Run"
+                if st.button(dry_lbl, key=f"dry_{r_nm}", use_container_width=True):
+                    _update_email_rule(r_nm, {"DryRun": "FALSE" if is_dry else "TRUE"})
+                    st.rerun()
+            with bc:
+                edit_lbl = "✕ Cancel" if is_editing else "✏️ Edit"
+                if st.button(edit_lbl, key=f"edit_{r_nm}", use_container_width=True):
+                    st.session_state.edit_rule_name = None if is_editing else r_nm
+                    st.rerun()
+            with bd:
+                if st.button("🗑️ Delete", key=f"del_{r_nm}", use_container_width=True):
+                    _delete_email_rule(r_nm)
+                    if st.session_state.edit_rule_name == r_nm:
+                        st.session_state.edit_rule_name = None
+                    st.rerun()
 
-        # ── LIVE TEST PARSER (runs in browser via Python)
-        st.markdown(f"<div style='color:{C['muted']};font-size:.75rem;margin:10px 0 2px'>"
-                    f"<b>Test your template</b> — paste a sample email body:</div>",
-                    unsafe_allow_html=True)
-        test_body = st.text_area("Sample email body", key="nr_test_body",
-                                  height=80, label_visibility="collapsed",
-                                  placeholder="Paste the full email notification text here…")
-        if st.button("🔍 Test Parse", key="nr_test_btn"):
-            if r_template.strip() and test_body.strip():
-                result = parse_email_body(r_template.strip(), test_body.strip())
-                st.session_state.email_parse_result = result
-                st.rerun()
-            else:
-                st.warning("Enter both template and sample body.")
-
-        epr = st.session_state.get("email_parse_result")
-        if epr is not None:
-            if epr:
-                amt_v  = clean_amount(epr.get("amt",""))
-                td_v   = epr.get("tdetails","—")
-                act_v  = epr.get("act","—")
-                dt_v   = epr.get("date","—")
-                sym_s  = settings.get("currency_symbol","₹")
-                acct_d = r_acct.strip() or act_v
+            # ── Inline edit form (expands under the rule) ──────────────────
+            if is_editing:
                 st.markdown(f"""
-                <div style="background:rgba(0,200,150,.08);border:1px solid rgba(0,200,150,.3);
-                     border-radius:12px;padding:12px 14px;margin:8px 0">
-                    <div style="font-size:.63rem;font-weight:800;letter-spacing:1px;
-                           color:{C['income']};text-transform:uppercase;margin-bottom:8px">
-                        ✅ Parse successful</div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.78rem">
-                        <div><span style="color:{C['muted']}">Amount</span><br>
-                             <span style="font-family:'JetBrains Mono',monospace;
-                             color:{C['expense']};font-weight:700">
-                             {sym_s}{amt_v:,.2f if amt_v else 0}</span></div>
-                        <div><span style="color:{C['muted']}">Merchant</span><br>
-                             <span style="font-weight:700">{td_v}</span></div>
-                        <div><span style="color:{C['muted']}">Account Tag</span><br>
-                             {account_badge_html(acct_d, inline=True)}</div>
-                        <div><span style="color:{C['muted']}">Date (raw)</span><br>
-                             <span style="font-weight:600">{dt_v}</span></div>
+                <div style="background:{C['bg']};border:1px solid {C['primary']}44;
+                     border-radius:10px;padding:12px;margin:4px 0 8px">
+                    <div style="font-size:.65rem;font-weight:800;letter-spacing:1px;
+                           color:{C['primary']};text-transform:uppercase;margin-bottom:10px">
+                        ✏️ Editing: {r_nm}
                     </div>
                 </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div style="background:rgba(255,79,109,.08);border:1px solid rgba(255,79,109,.3);
-                     border-radius:12px;padding:12px;margin:8px 0;font-size:.82rem;
-                     color:{C['expense']}">
-                    ❌ No match. Check the template text matches this email exactly.</div>""",
-                    unsafe_allow_html=True)
 
-        if st.button("💾 Save Rule", key="nr_save", type="primary",
-                     use_container_width=True):
-            if r_name.strip() and r_sender.strip() and r_template.strip() and r_acct.strip():
+                with st.form(f"edit_form_{r_nm}", clear_on_submit=False):
+                    e_sender  = st.text_input("Sender Email",
+                                              value=str(rule.get("Sender","")),
+                                              key=f"e_sender_{r_nm}")
+                    e_subject = st.text_input("Subject Contains",
+                                              value=str(rule.get("SubjectContains","")),
+                                              key=f"e_subject_{r_nm}")
+                    e_tmpl    = st.text_area("Body Template",
+                                             value=str(rule.get("BodyTemplate","")),
+                                             height=80, key=f"e_tmpl_{r_nm}")
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        e_acct = st.text_input("Account Label",
+                                               value=str(rule.get("AccountLabel","")),
+                                               key=f"e_acct_{r_nm}")
+                        e_look = st.number_input("Lookback Days",
+                                                 value=int(rule.get("LookbackDays",2) or 2),
+                                                 min_value=1, max_value=30, step=1,
+                                                 key=f"e_look_{r_nm}")
+                    with ec2:
+                        cur_type  = str(rule.get("DefaultType","Expense"))
+                        type_opts = ["Debit (Expense)","Credit (Income)"]
+                        type_idx  = 1 if cur_type == "Income" else 0
+                        e_type    = st.selectbox("Transaction Type", type_opts,
+                                                  index=type_idx, key=f"e_type_{r_nm}")
+                        e_dry     = st.toggle("🔬 Dry Run",
+                                              value=is_dry, key=f"e_dry_{r_nm}")
+
+                    if st.form_submit_button("💾 Save Changes",
+                                             use_container_width=True, type="primary"):
+                        _update_email_rule(r_nm, {
+                            "Sender":          e_sender.strip(),
+                            "SubjectContains": e_subject.strip(),
+                            "BodyTemplate":    e_tmpl.strip(),
+                            "AccountLabel":    e_acct.strip(),
+                            "LookbackDays":    str(e_look),
+                            "DefaultType":     "Expense" if "Debit" in e_type else "Income",
+                            "DryRun":          "TRUE" if e_dry else "FALSE",
+                        })
+                        st.session_state.edit_rule_name = None
+                        st.success(f"✅ Rule '{r_nm}' updated!")
+                        st.rerun()
+
+    # ── ADD NEW RULE — always visible, form clears on save ───────────────────
+    st.markdown(f'<div class="section-label">Add New Rule</div>', unsafe_allow_html=True)
+
+    # Quick-fill templates
+    st.markdown(f"<div style='font-size:.72rem;color:{C['muted']};margin-bottom:6px'>"
+                f"Quick-fill a template or fill manually:</div>",
+                unsafe_allow_html=True)
+
+    TEMPLATES = {
+        "— blank —": ("","","","","HDFC CC / SBI CC / Paytm UPI"),
+        "HDFC Credit Card": (
+            "alerts@hdfcbank.bank.in",
+            "debited via Credit Card",
+            "Rs.{amt} is debited from your {act} towards {tdetails} on {date}",
+            "Expense",
+            "HDFC CC 7500",
+        ),
+        "SBI Credit Card": (
+            "onlinesbicard@sbicard.com",
+            "Transaction Alert from SBI Card",
+            "Rs.{amt} spent on your {skip} {act} at {tdetails} on {date}.",
+            "Expense",
+            "SBI CC 4996",
+        ),
+        "ICICI Credit Card": (
+            "alerts@icicibank.com",
+            "ICICI Bank Credit Card",
+            "Rs.{amt} has been debited from your {act} at {tdetails} on {date}",
+            "Expense",
+            "ICICI CC",
+        ),
+        "Axis Credit Card": (
+            "efulfillment@axisbank.com",
+            "Axis Bank Credit Card",
+            "Rs.{amt} has been charged to your {act} at {tdetails} on {date}",
+            "Expense",
+            "Axis CC",
+        ),
+    }
+
+    tpl_cols = st.columns(len(TEMPLATES))
+    for i, (tpl_name, _) in enumerate(TEMPLATES.items()):
+        with tpl_cols[i]:
+            lbl = "Blank" if "blank" in tpl_name else tpl_name.split()[0]
+            is_sel = st.session_state.get("nr_template_pick","— blank —") == tpl_name
+            st.markdown(f'<div class="{"pill-on" if is_sel else "pill-off"}">', unsafe_allow_html=True)
+            if st.button(lbl, key=f"tpl_{i}"):
+                st.session_state.nr_template_pick = tpl_name
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # Fill defaults from selected template
+    tpl_key  = st.session_state.get("nr_template_pick","— blank —")
+    tpl_vals = TEMPLATES.get(tpl_key, TEMPLATES["— blank —"])
+
+    with st.form("add_rule_form", clear_on_submit=True):
+        nr_name    = st.text_input("Rule Name *",
+                                    placeholder="e.g. HDFC Credit Card  ·  SBI CC  ·  Kotak Debit",
+                                    key="nr_name_f")
+        nr_sender  = st.text_input("Sender Email *",
+                                    value=tpl_vals[0],
+                                    placeholder="alerts@hdfcbank.bank.in",
+                                    key="nr_sender_f")
+        nr_subject = st.text_input("Subject Contains",
+                                    value=tpl_vals[1],
+                                    placeholder="debited via Credit Card",
+                                    key="nr_subject_f")
+        nr_tmpl    = st.text_area("Body Template *",
+                                   value=tpl_vals[2],
+                                   placeholder="Rs.{amt} is debited from your {act} towards {tdetails} on {date}",
+                                   height=75, key="nr_tmpl_f")
+
+        fa, fb = st.columns(2)
+        with fa:
+            nr_acct = st.text_input("Account Label *",
+                                     value=tpl_vals[4],
+                                     placeholder="HDFC CC 7500",
+                                     key="nr_acct_f",
+                                     help="Stored in Tags column — used in all account filters")
+            nr_look = st.number_input("Lookback Days", value=2,
+                                       min_value=1, max_value=30, step=1,
+                                       key="nr_look_f")
+        with fb:
+            nr_type = st.selectbox("Transaction Type",
+                                    ["Debit (Expense)","Credit (Income)"],
+                                    index=0 if tpl_vals[3]=="Expense" else 1,
+                                    key="nr_type_f")
+            nr_dry  = st.toggle("🔬 Start in Dry Run mode",
+                                 value=True, key="nr_dry_f",
+                                 help="Recommended — Code.gs parses but doesn't write until you turn this off")
+
+        # ── Test Parse inside form ─────────────────────────────────────────
+        st.markdown(f"<div style='color:{C['muted']};font-size:.73rem;margin:8px 0 3px'>"
+                    f"Paste a sample email body to test your template before saving:</div>",
+                    unsafe_allow_html=True)
+        nr_test_body = st.text_area("Sample email body", key="nr_test_f",
+                                     height=70, label_visibility="collapsed",
+                                     placeholder="Paste the full email notification text here…")
+
+        fb1, fb2 = st.columns(2)
+        with fb1:
+            test_clicked = st.form_submit_button("🔍 Test Parse", use_container_width=True)
+        with fb2:
+            save_clicked = st.form_submit_button("💾 Save Rule", use_container_width=True,
+                                                  type="primary")
+
+        if test_clicked:
+            if nr_tmpl.strip() and nr_test_body.strip():
+                result = parse_email_body(nr_tmpl.strip(), nr_test_body.strip())
+                st.session_state.email_parse_result = result
+                st.session_state._test_tmpl_snap = nr_tmpl.strip()
+            else:
+                st.warning("Enter both Body Template and sample email body to test.")
+
+        if save_clicked:
+            if nr_name.strip() and nr_sender.strip() and nr_tmpl.strip() and nr_acct.strip():
                 existing_names = rules_df["RuleName"].tolist() if not rules_df.empty else []
-                if r_name.strip() in existing_names:
-                    st.error("A rule with this name already exists.")
+                if nr_name.strip() in existing_names:
+                    st.error(f"A rule named '{nr_name.strip()}' already exists. Use a different name.")
                 else:
                     _write_email_rule({
-                        "RuleName":        r_name.strip(),
-                        "Sender":          r_sender.strip(),
-                        "SubjectContains": r_subject.strip(),
-                        "BodyTemplate":    r_template.strip(),
+                        "RuleName":        nr_name.strip(),
+                        "Sender":          nr_sender.strip(),
+                        "SubjectContains": nr_subject.strip(),
+                        "BodyTemplate":    nr_tmpl.strip(),
                         "DateFormat":      "",
-                        "DefaultType":     "Expense" if "Debit" in r_deftype else "Income",
-                        "AccountLabel":    r_acct.strip(),
+                        "DefaultType":     "Expense" if "Debit" in nr_type else "Income",
+                        "AccountLabel":    nr_acct.strip(),
                         "Active":          "TRUE",
-                        "DryRun":          "TRUE" if r_dry else "FALSE",
-                        "LookbackDays":    str(r_lookback),
+                        "DryRun":          "TRUE" if nr_dry else "FALSE",
+                        "LookbackDays":    str(nr_look),
                         "LastRun":         "",
                         "LastImported":    "",
                     })
                     st.session_state.email_parse_result = None
-                    st.success(f"✅ Rule '{r_name.strip()}' saved!")
+                    st.session_state.nr_template_pick   = "— blank —"
+                    st.success(f"✅ Rule '{nr_name.strip()}' saved! You can now add another rule.")
                     st.rerun()
             else:
-                st.error("Rule Name, Sender, Body Template, and Account Label are required.")
+                st.error("Rule Name, Sender Email, Body Template, and Account Label are all required.")
+
+    # ── Test parse result (shown outside form so it persists) ─────────────
+    epr = st.session_state.get("email_parse_result")
+    if epr is not None:
+        if epr:
+            amt_v  = clean_amount(epr.get("amt",""))
+            td_v   = epr.get("tdetails","—")
+            act_v  = epr.get("act","—")
+            dt_v   = epr.get("date","—")
+            sym_s  = settings.get("currency_symbol","₹")
+            st.markdown(f"""
+            <div style="background:rgba(0,200,150,.08);border:1px solid rgba(0,200,150,.3);
+                 border-radius:12px;padding:12px 14px;margin:8px 0">
+                <div style="font-size:.63rem;font-weight:800;letter-spacing:1px;
+                       color:{C['income']};text-transform:uppercase;margin-bottom:8px">✅ Parse successful</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.78rem">
+                    <div><span style="color:{C['muted']}">Amount</span><br>
+                         <span style="font-family:'JetBrains Mono',monospace;color:{C['expense']};font-weight:700">
+                         {sym_s}{f"{amt_v:,.2f}" if amt_v else "—"}</span></div>
+                    <div><span style="color:{C['muted']}">Merchant</span><br>
+                         <span style="font-weight:700">{td_v}</span></div>
+                    <div><span style="color:{C['muted']}">Account (raw)</span><br>
+                         <span style="font-weight:600">{act_v}</span></div>
+                    <div><span style="color:{C['muted']}">Date (raw)</span><br>
+                         <span style="font-weight:600">{dt_v}</span></div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background:rgba(255,79,109,.08);border:1px solid rgba(255,79,109,.3);
+                 border-radius:12px;padding:12px;margin:8px 0;font-size:.82rem;color:{C['expense']}">
+                ❌ No match. Check the template text matches the email exactly.
+            </div>""", unsafe_allow_html=True)
+        if st.button("✕ Clear result", key="clr_parse"):
+            st.session_state.email_parse_result = None
+            st.rerun()
 
     # ── EXPORT
     st.markdown('<div class="section-label">Data</div>', unsafe_allow_html=True)
