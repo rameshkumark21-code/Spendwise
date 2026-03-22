@@ -220,42 +220,25 @@ def ensure_sheets():
 def _parse_dates(series):
     """
     Parse date strings from Sheets into Timestamps.
-    Stored format: MM/DD/YYYY.
-    Also handles: DD/MM/YYYY (Code.gs legacy), ISO YYYY-MM-DD, dash separators,
-    2-digit years. Dashes anywhere are treated as slashes before parsing.
-    Ambiguous X/Y/YYYY where both parts ≤ 12: assumed MM/DD (stored format).
+    Strict MM/DD/YYYY only. Also handles ISO YYYY-MM-DD with dashes
+    (since some sources write that). Nothing else — no guessing.
     """
     import re as _re
     def parse_one(v):
         s = str(v).strip()
         if not s or s in ("nan","None","NaT",""):
             return pd.NaT
-        # Normalise: replace all dashes with slashes
-        s = s.replace("-", "/")
-        # YYYY/MM/DD  (ISO after dash→slash)
-        m = _re.match(r'^(\d{4})/(\d{1,2})/(\d{1,2})$', s)
+        # MM/DD/YYYY or M/D/YYYY (stored format)
+        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s)
         if m:
-            try: return pd.Timestamp(f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}")
+            mm, dd, yyyy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            try: return pd.Timestamp(f"{yyyy}-{mm:02d}-{dd:02d}")
             except: pass
-        # X/Y/YYYY or X/Y/YY
-        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2,4})$', s)
+        # YYYY-MM-DD (ISO, dashes — from any source writing this)
+        m = _re.match(r'^(\d{4})-(\d{2})-(\d{2})$', s)
         if m:
-            a, b = int(m.group(1)), int(m.group(2))
-            yr = int(m.group(3))
-            if len(m.group(3)) == 2:
-                yr += 2000 if yr < 50 else 1900
-            if a > 12:
-                # a is definitely day, b is month → DD/MM source
-                try: return pd.Timestamp(f"{yr}-{b:02d}-{a:02d}")
-                except: pass
-            elif b > 12:
-                # b is definitely day, a is month → MM/DD stored format
-                try: return pd.Timestamp(f"{yr}-{a:02d}-{b:02d}")
-                except: pass
-            else:
-                # Both ≤ 12: assume MM/DD (stored format)
-                try: return pd.Timestamp(f"{yr}-{a:02d}-{b:02d}")
-                except: pass
+            try: return pd.Timestamp(s)
+            except: pass
         return pd.NaT
     return series.apply(parse_one)
 
@@ -382,6 +365,62 @@ def load_categories():
     ss = get_ss()
     data = ss.worksheet("Categories").get_all_records()
     return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Categories"])
+
+@st.cache_data(ttl=60)
+def load_cat_freq():
+    """
+    Return category and subcategory lists derived from actual transaction history,
+    sorted by frequency (most-used first). Falls back to Categories sheet if no
+    transactions exist yet. Cached for 60 s — fast enough for smooth UX.
+
+    Returns:
+        cats_sorted  : list of category strings (most-used first)
+        sub_map      : dict { category: [subcategory, ...] } (most-used first per cat)
+    """
+    df = load_transactions()
+    cats_df = load_categories()
+
+    if df.empty:
+        # No transactions — use Categories sheet alphabetically
+        cats_sorted = sorted(cats_df["Category"].dropna().unique().tolist())
+        sub_map = {}
+        for cat in cats_sorted:
+            sub_map[cat] = cats_df[cats_df["Category"]==cat]["Subcategory"].dropna().tolist()
+        return cats_sorted, sub_map
+
+    # Count category frequency from transactions
+    cat_counts = (
+        df[df["Category"].notna() & (df["Category"] != "")]
+        ["Category"].value_counts()
+    )
+    # Merge with any cats in Categories sheet not yet in transactions
+    all_cats = set(cats_df["Category"].dropna().unique().tolist())
+    known_cats = set(cat_counts.index.tolist())
+    extra_cats = sorted(all_cats - known_cats)
+    cats_sorted = cat_counts.index.tolist() + extra_cats
+
+    # Count subcategory frequency per category
+    sub_map = {}
+    for cat in cats_sorted:
+        # Subs seen in transactions for this category
+        cat_df = df[df["Category"] == cat]
+        sub_counts = (
+            cat_df[cat_df["Subcategory"].notna() & (cat_df["Subcategory"] != "")]
+            ["Subcategory"].value_counts()
+        )
+        subs_from_txns = sub_counts.index.tolist()
+
+        # Subs defined in Categories sheet for this category (for completeness)
+        subs_from_cats = (
+            cats_df[cats_df["Category"]==cat]["Subcategory"]
+            .dropna().unique().tolist()
+        )
+        # Merge: transaction-ranked first, then any from sheet not yet seen
+        extra_subs = [s for s in subs_from_cats if s not in subs_from_txns]
+        sub_map[cat] = subs_from_txns + extra_subs
+
+    return cats_sorted, sub_map
+
 
 @st.cache_data(ttl=120)
 def load_budgets():
@@ -1031,10 +1070,15 @@ def render_nav():
 
 @st.dialog("✏️ Edit Transaction", width="small")
 def dlg_edit(txn):
-    cats_df = load_categories()
-    df_all  = load_transactions()
-    cats = cats_df["Category"].unique().tolist()
-    cat_idx = cats.index(txn["Category"]) if txn["Category"] in cats else 0
+    # Frequency-sorted lists — shared cache with Add screen, no extra load
+    cats_sorted, sub_map = load_cat_freq()
+    df_all = load_transactions()
+
+    cur_cat = str(txn.get("Category",""))
+    # Keep current category at index 0 if it exists so dialog opens on it
+    cats_ordered = ([cur_cat] + [c for c in cats_sorted if c != cur_cat]
+                    if cur_cat and cur_cat in cats_sorted else cats_sorted)
+    cat_idx = 0  # always starts on the transaction's own category
 
     ttype = st.radio("", ["💸 Expense","💰 Income"], horizontal=True,
                      index=0 if txn.get("Type","Expense") == "Expense" else 1,
@@ -1043,7 +1087,7 @@ def dlg_edit(txn):
                               min_value=0.0, step=1.0, format="%.0f", key="dlg_amt")
     merch  = st.text_input("Merchant", value=txn["Merchant"], key="dlg_merch")
 
-    dlg_cat_opts = cats + ["➕ New category…"]
+    dlg_cat_opts = cats_ordered + ["➕ New category…"]
     sel_cat_r = st.selectbox("Category", dlg_cat_opts, index=cat_idx, key="dlg_cat")
     if sel_cat_r == "➕ New category…":
         nc = st.text_input("New category", key="dlg_nc")
@@ -1052,13 +1096,18 @@ def dlg_edit(txn):
             if nc.strip() and ns.strip():
                 get_ss().worksheet("Categories").append_row([nc.strip(), ns.strip(),"","📌"])
                 st.cache_data.clear(); st.rerun()
-        sel_cat = cats[0] if cats else "Others"
+        sel_cat = cats_ordered[0] if cats_ordered else "Others"
     else:
         sel_cat = sel_cat_r
 
-    subs = cats_df[cats_df["Category"]==sel_cat]["Subcategory"].tolist()
-    sub_idx = subs.index(txn.get("Subcategory","")) if txn.get("Subcategory","") in subs else 0
-    dlg_sub_opts = subs + ["➕ New subcategory…"] if subs else ["➕ New subcategory…"]
+    # Subcategory — frequency-sorted, current txn sub preselected
+    subs = sub_map.get(sel_cat, [])
+    cur_sub = str(txn.get("Subcategory",""))
+    subs_ordered = ([cur_sub] + [s for s in subs if s != cur_sub]
+                    if cur_sub and cur_sub in subs and sel_cat == cur_cat
+                    else subs)
+    sub_idx = 0
+    dlg_sub_opts = subs_ordered + ["➕ New subcategory…"] if subs_ordered else ["➕ New subcategory…"]
     sel_sub_r = st.selectbox("Subcategory", dlg_sub_opts, index=sub_idx, key="dlg_sub")
     if sel_sub_r == "➕ New subcategory…":
         ns2 = st.text_input("New subcategory name", key="dlg_ns2")
@@ -1066,7 +1115,7 @@ def dlg_edit(txn):
             if ns2.strip():
                 get_ss().worksheet("Categories").append_row([sel_cat, ns2.strip(),"","📌"])
                 st.cache_data.clear(); st.rerun()
-        sel_sub = subs[0] if subs else ""
+        sel_sub = subs_ordered[0] if subs_ordered else ""
     else:
         sel_sub = sel_sub_r
 
@@ -1455,19 +1504,19 @@ def screen_transactions():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_add():
-    cats_df  = load_categories()
     df_all   = load_transactions()
     settings = load_settings()
     sym      = settings.get("currency_symbol","₹")
-    cats     = cats_df["Category"].unique().tolist()
+    # Frequency-sorted categories from actual transaction history
+    cats_sorted, sub_map = load_cat_freq()
 
     st.markdown('<div class="page-title">Add Transaction ➕</div>', unsafe_allow_html=True)
 
     ttype  = st.radio("", ["💸 Expense","💰 Income"], horizontal=True, key="add_type")
     is_exp = "Expense" in ttype
 
-    # ── CATEGORY (outside form for dynamic reaction)
-    CAT_OPTIONS = cats + ["➕ New category…"]
+    # ── CATEGORY — sorted by frequency
+    CAT_OPTIONS = cats_sorted + ["➕ New category…"]
     sel_cat_raw = st.selectbox("Category", CAT_OPTIONS, key="add_cat_sel")
     if sel_cat_raw == "➕ New category…":
         new_cat_name = st.text_input("New category name", key="add_cat_new", placeholder="e.g. Pet Care")
@@ -1480,11 +1529,12 @@ def screen_add():
                 st.rerun()
             else:
                 st.error("Enter both names.")
-        sel_cat = cats[0] if cats else "Others"
+        sel_cat = cats_sorted[0] if cats_sorted else "Others"
     else:
         sel_cat = sel_cat_raw
 
-    subs_list = cats_df[cats_df["Category"]==sel_cat]["Subcategory"].tolist()
+    # ── SUBCATEGORY — frequency-sorted for the selected category
+    subs_list = sub_map.get(sel_cat, [])
     SUB_OPTIONS = subs_list + ["➕ New subcategory…"] if subs_list else ["➕ New subcategory…"]
     sel_sub_raw = st.selectbox("Subcategory", SUB_OPTIONS, key="add_sub_sel")
     if sel_sub_raw == "➕ New subcategory…":
