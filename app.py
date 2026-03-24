@@ -3385,4 +3385,4 @@ elif nav == "settings":     screen_settings()
 
 
 if __name__ == "__main__":
-main()
+	main()
