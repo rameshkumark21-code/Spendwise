@@ -386,7 +386,7 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
     return results
 
 
-  @st.cache_data(ttl=20)
+    @st.cache_data(ttl=20)
     def _load_transactions():
         ss   = get_ss()
         data = ss.worksheet("Transactions").get_all_records()
