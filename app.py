@@ -292,7 +292,7 @@ def _parse_dates(series):
         m = ISO.match(s)
         if m:
             try: 
-                return pd.Timestamp(s)  # ISO format is YYYY-MM-DD, pandas handles it
+                return pd.Timestamp(s)
             except: pass
         # DD-MM-YYYY
         m = DMY2.match(s)
@@ -304,63 +304,46 @@ def _parse_dates(series):
         try: 
             return pd.Timestamp(pd.to_datetime(s, dayfirst=True, errors="coerce"))
         except: 
-            return pd.NaTg
+            return pd.NaT
 
     return series.apply(parse_one)
 
 
-def _normalise_date_str(s: str) -> str:
-    """
-    Convert any incoming date string to DD/MM/YYYY (Code.gs standard).
-    Handles: DD/MM/YYYY, YYYY-MM-DD, D/M/YYYY single-digit, 2-digit year.
-    Disambiguation: a>12 → a is day. b>12 → b is day.
-                    both ≤ 12 → treat as DD/MM (Code.gs convention).
-    """
-    import re as _re
-    if not s or s in ("nan","None","NaT",""):
-        return s
-    s = str(s).strip()
-    s2 = s.replace("-", "/")
-
-    # YYYY/MM/DD or YYYY-MM-DD (ISO)
-    m = _re.match(r'^(\d{4})/(\d{1,2})/(\d{1,2})$', s2)
+def _normalise_date_str(s):
+    """Return a clean DD/MM/YYYY string from any common format."""
+    if pd.isna(s):
+        return ""
+    s2 = str(s).strip()
+    if not s2:
+        return ""
+    # Already clean
+    if _re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', s2):
+        return s2
+    if _re.match(r'^\d{4}-\d{2}-\d{2}$', s2):
+        return s2
+    # DMY with dashes 25-11-2023
+    m = _re.match(r'^(\d{1,2})-(\d{1,2})-(\d{4})$', s2)
     if m:
-        return f"{int(m.group(3)):02d}/{int(m.group(2)):02d}/{m.group(1)}"
-
-    # D/M/YYYY or DD/MM/YYYY
-        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
-        if m:
-            a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if a > 12:
-                return f"{a:02d}/{b:02d}/{y}"   # a=day (>12), b=month — DD/MM/YYYY
-            elif b > 12:
-                return f"{b:02d}/{a:02d}/{y}"   # b=day (>12), a=month — swap to DD/MM/YYYY
-            else:
-                # FIXED: Both ≤12 means ambiguous, but Code.gs convention is DD/MM/YYYY
-                # So a=day, b=month → DD/MM/YYYY
-                return f"{a:02d}/{b:02d}/{y}"   # DD/MM/YYYY
-
-
-    # X/Y/YY (2-digit year)
-    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', s2)
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return f"{a:02d}/{b:02d}/{y}"
+    # MDY with slashes 11/25/2023 (US)
+    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
     if m:
-        a, b = int(m.group(1)), int(m.group(2))
-        yr = int(m.group(3)); yr += 2000 if yr < 50 else 1900
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if a > 12:
-            return f"{a:02d}/{b:02d}/{yr}"
+            return f"{a:02d}/{b:02d}/{y}"   # a=day (>12), b=month — DD/MM/YYYY
         elif b > 12:
-            return f"{b:02d}/{a:02d}/{yr}"
+            return f"{b:02d}/{a:02d}/{y}"   # b=day (>12), a=month — swap to DD/MM/YYYY
         else:
-            return f"{a:02d}/{b:02d}/{yr}"
-
-    # Pandas fallback
+            # FIXED: Both ≤12 means ambiguous, but Code.gs convention is DD/MM/YYYY
+            # So a=day, b=month → DD/MM/YYYY
+            return f"{a:02d}/{b:02d}/{y}"   # DD/MM/YYYY
+    # Fallback: let pandas try dayfirst
     try:
-        ts = pd.Timestamp(pd.to_datetime(s, dayfirst=True))
-        if pd.notna(ts):
-            return ts.strftime("%d/%m/%Y")
-    except Exception:
-        pass
-    return s
+        dt = pd.to_datetime(s2, dayfirst=True, errors="raise")
+        return dt.strftime("%d/%m/%Y")
+    except:
+        return ""
 
 def _detect_date_issues(df: pd.DataFrame) -> dict:
     """
