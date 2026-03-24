@@ -269,62 +269,68 @@ def ensure_sheets():
 def _parse_dates(series):
     """
     Parse date strings from Sheets into Timestamps.
-    Strict MM/DD/YYYY only. Also handles ISO YYYY-MM-DD with dashes
-    (since some sources write that). Nothing else — no guessing.
+    Code.gs writes DD/MM/YYYY. Manual adds/edits write YYYY-MM-DD.
+    Both handled correctly — in DD/MM/YYYY, group(1)=day, group(2)=month.
     """
     import re as _re
+    DMY  = _re.compile(r'^(\d{1,2})/(\d{1,2})/(\d{4})$')
+    ISO  = _re.compile(r'^(\d{4})-(\d{2})-(\d{2})$')
+    DMY2 = _re.compile(r'^(\d{1,2})-(\d{1,2})-(\d{4})$')
+
     def parse_one(v):
         s = str(v).strip()
-        if not s or s in ("nan","None","NaT",""):
+        if not s or s in ("nan","None","NaT","","0","Date"):
             return pd.NaT
-        # MM/DD/YYYY or M/D/YYYY (stored format)
-        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s)
+        # DD/MM/YYYY or D/M/YYYY — Code.gs format, day is group(1)
+        m = DMY.match(s)
         if m:
-            mm, dd, yyyy = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            try: return pd.Timestamp(f"{yyyy}-{mm:02d}-{dd:02d}")
+            try:
+                return pd.Timestamp(int(m.group(3)), int(m.group(2)), int(m.group(1)))
             except: pass
-        # YYYY-MM-DD (ISO, dashes — from any source writing this)
-        m = _re.match(r'^(\d{4})-(\d{2})-(\d{2})$', s)
+        # YYYY-MM-DD — manual add/edit format
+        m = ISO.match(s)
         if m:
             try: return pd.Timestamp(s)
             except: pass
-        return pd.NaT
+        # DD-MM-YYYY
+        m = DMY2.match(s)
+        if m:
+            try:
+                return pd.Timestamp(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+            except: pass
+        try: return pd.Timestamp(pd.to_datetime(s, dayfirst=True, errors="coerce"))
+        except: return pd.NaT
+
     return series.apply(parse_one)
 
 def _normalise_date_str(s: str) -> str:
     """
-    Convert any incoming date string to MM/DD/YYYY.
-    Handles: DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, YYYY/MM/DD,
-             DD-MM-YYYY, X/Y/YY (2-digit year), dashes as separators.
-    Disambiguation rule: if first part > 12 → it is day (DD/MM source).
-                         if second part > 12 → it is day (MM/DD source).
-                         both ≤ 12 → treat as DD/MM (Code.gs writes DD/MM).
+    Convert any incoming date string to DD/MM/YYYY (Code.gs standard).
+    Handles: DD/MM/YYYY, YYYY-MM-DD, D/M/YYYY single-digit, 2-digit year.
+    Disambiguation: a>12 → a is day. b>12 → b is day.
+                    both ≤ 12 → treat as DD/MM (Code.gs convention).
     """
     import re as _re
     if not s or s in ("nan","None","NaT",""):
         return s
     s = str(s).strip()
-    # Normalise: replace all dashes with slashes
     s2 = s.replace("-", "/")
 
-    # YYYY/MM/DD (ISO)
+    # YYYY/MM/DD or YYYY-MM-DD (ISO)
     m = _re.match(r'^(\d{4})/(\d{1,2})/(\d{1,2})$', s2)
     if m:
-        return f"{int(m.group(2)):02d}/{int(m.group(3)):02d}/{m.group(1)}"
+        return f"{int(m.group(3)):02d}/{int(m.group(2)):02d}/{m.group(1)}"
 
-    # X/Y/YYYY
+    # D/M/YYYY or DD/MM/YYYY
     m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
     if m:
         a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if a > 12:
-            # a = day, b = month → DD/MM → output MM/DD/YYYY
-            return f"{b:02d}/{a:02d}/{y}"
+            return f"{a:02d}/{b:02d}/{y}"   # a=day, b=month — already DD/MM
         elif b > 12:
-            # b = day, a = month → already MM/DD → output as-is padded
-            return f"{a:02d}/{b:02d}/{y}"
+            return f"{b:02d}/{a:02d}/{y}"   # b=day, a=month — swap to DD/MM
         else:
-            # Both ≤ 12: treat as DD/MM (Code.gs source) → output MM/DD/YYYY
-            return f"{b:02d}/{a:02d}/{y}"
+            return f"{a:02d}/{b:02d}/{y}"   # both ≤ 12: DD/MM (Code.gs)
 
     # X/Y/YY (2-digit year)
     m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', s2)
@@ -332,21 +338,20 @@ def _normalise_date_str(s: str) -> str:
         a, b = int(m.group(1)), int(m.group(2))
         yr = int(m.group(3)); yr += 2000 if yr < 50 else 1900
         if a > 12:
-            return f"{b:02d}/{a:02d}/{yr}"
-        elif b > 12:
             return f"{a:02d}/{b:02d}/{yr}"
+        elif b > 12:
+            return f"{b:02d}/{a:02d}/{yr}"
         else:
-            return f"{b:02d}/{a:02d}/{yr}"  # treat as DD/MM
+            return f"{a:02d}/{b:02d}/{yr}"
 
-    # Pandas fallback — last resort
+    # Pandas fallback
     try:
         ts = pd.Timestamp(pd.to_datetime(s, dayfirst=True))
         if pd.notna(ts):
-            return ts.strftime("%Y-%m-%d")
+            return ts.strftime("%d/%m/%Y")
     except Exception:
         pass
-
-    return s  # unchanged if nothing worked
+    return s
 
 def _detect_date_issues(df: pd.DataFrame) -> dict:
     """
@@ -1377,7 +1382,8 @@ def dlg_edit(txn):
                 cat_changed = (sel_cat != orig_cat or sel_sub != orig_sub)
 
                 upd = {
-                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%Y-%m-%d"),
+                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%d/%m/%Y"),
+
                     "Merchant": merch.strip(),
                     "Type": "Expense" if "Expense" in ttype else "Income",
                     "Amount": -abs(amount) if "Expense" in ttype else abs(amount),
@@ -2188,7 +2194,7 @@ def screen_add():
             if amount > 0 and merch.strip():
                 _write_txn({
                     "RowID":         str(uuid.uuid4())[:8],
-                    "Date":          txn_date.strftime("%Y-%m-%d"),
+                    "Date":          txn_date.strftime("%d/%m/%Y"),
                     "Merchant":      merch.strip().title(),
                     "Amount":        -abs(amount) if is_exp else abs(amount),
                     "Type":          "Expense" if is_exp else "Income",
@@ -3355,7 +3361,7 @@ def run_setup():
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main():
+def main():e
     init_state()
     inject_css()
     run_setup()
