@@ -227,6 +227,38 @@ def _ensure_columns(ws, required_headers: list):
             ws.update_cell(1, col, h)
             existing.append(h)
 
+def _raw_sheets_data():
+    """Fetch raw transaction data from Google Sheets."""
+    try:
+        sheet = _sheets_service().spreadsheets()
+        result = sheet.values().get(spreadsheetId=SHEET_ID, range=RANGE_NAME).execute()
+        data = result.get('values', [])
+        
+        if not data or len(data) < 2:  # Need at least header + 1 row
+            return pd.DataFrame(columns=["RowID", "Date", "Merchant", "Category", "Amount"])
+        
+        headers = data[0]
+        rows = data[1:]
+        
+        # Ensure all rows match header length
+        cleaned_rows = []
+        for row in rows:
+            if len(row) < len(headers):
+                row = row + [''] * (len(headers) - len(row))
+            elif len(row) > len(headers):
+                row = row[:len(headers)]
+            cleaned_rows.append(row)
+        
+        df = pd.DataFrame(cleaned_rows, columns=headers)
+        return df
+        
+    except Exception as e:
+        st.error(f"❌ Error fetching data from Google Sheets: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+        return pd.DataFrame()
+
+
 def ensure_sheets():
     ss = get_ss()
     existing = [ws.title for ws in ss.worksheets()]
@@ -3334,6 +3366,7 @@ def screen_settings():
         <div style="font-weight:900;color:{C['text']};font-size:1rem;margin:6px 0">ClearSpend v2.0</div>
         <div>Multi-Account · Unified Email Import · Google Sheets</div>
     </div>""", unsafe_allow_html=True)
+
 
 
 
