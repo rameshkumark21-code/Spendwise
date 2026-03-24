@@ -3378,10 +3378,10 @@ run_setup()
 render_top_bar()
 nav = st.session_state.nav
 if   nav == "home":         screen_home()
-elif nav == "transactions": screen_transactions()
-elif nav == "add":          screen_add()
-elif nav == "analytics":    screen_analytics()
-elif nav == "settings":     screen_settings()
+	elif nav == "transactions": screen_transactions()
+	elif nav == "add":          screen_add()
+	elif nav == "analytics":    screen_analytics()
+	elif nav == "settings":     screen_settings()
 
 
 if __name__ == "__main__":
