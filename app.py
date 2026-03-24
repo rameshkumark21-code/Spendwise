@@ -3372,10 +3372,9 @@ def run_setup():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():e
-    init_state()
+init_state()
     inject_css()
     run_setup()
-
     render_top_bar()
     nav = st.session_state.nav
     if   nav == "home":         screen_home()
