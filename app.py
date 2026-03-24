@@ -387,14 +387,19 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
 
 
 @st.cache_data(ttl=20)
-def load_transactions():
-    ss = get_ss()
-    data = ss.worksheet("Transactions").get_all_records()
-    if not data:
-        return pd.DataFrame(columns=HEADERS["Transactions"])
-    df = pd.DataFrame(data)
-    df["Date"]   = _parse_dates(df["Date"])
-    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
+def _load_transactions():
+    df = _raw_sheets_data()
+    
+    # DEBUG: Show what _parse_dates returns
+    print("\n=== BEFORE _parse_dates ===")
+    print("Raw values:", df['Date'].head(3).tolist())
+    
+    df['Date'] = _parse_dates(df['Date'])
+    
+    print("\n=== AFTER _parse_dates ===")
+    for i, val in df['Date'].head(3).items():
+        print(f"Row {i}: {val} (type: {type(val).__name__})")
+    
     return df
 
 @st.cache_data(ttl=60)
