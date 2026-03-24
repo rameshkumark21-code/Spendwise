@@ -2201,7 +2201,7 @@ def screen_add():
 
         if st.form_submit_button("💾  Save Transaction", use_container_width=True, type="primary"):
             if amount > 0 and merch.strip():
-			_write_txn({
+            _write_txn({
                     "RowID":         str(uuid.uuid4())[:8],
                     "Date":          txn_date.strftime("%d/%m/%Y"),  # FIXED: DD/MM/YYYY
                     "Merchant":      merch.strip().title(),
