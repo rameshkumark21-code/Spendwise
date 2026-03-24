@@ -227,38 +227,6 @@ def _ensure_columns(ws, required_headers: list):
             ws.update_cell(1, col, h)
             existing.append(h)
 
-def _raw_sheets_data():
-    """Fetch raw transaction data from Google Sheets."""
-    try:
-        sheet = _sheets_service().spreadsheets()
-        result = sheet.values().get(spreadsheetId=SHEET_ID, range=RANGE_NAME).execute()
-        data = result.get('values', [])
-        
-        if not data or len(data) < 2:  # Need at least header + 1 row
-            return pd.DataFrame(columns=["RowID", "Date", "Merchant", "Category", "Amount"])
-        
-        headers = data[0]
-        rows = data[1:]
-        
-        # Ensure all rows match header length
-        cleaned_rows = []
-        for row in rows:
-            if len(row) < len(headers):
-                row = row + [''] * (len(headers) - len(row))
-            elif len(row) > len(headers):
-                row = row[:len(headers)]
-            cleaned_rows.append(row)
-        
-        df = pd.DataFrame(cleaned_rows, columns=headers)
-        return df
-        
-    except Exception as e:
-        st.error(f"❌ Error fetching data from Google Sheets: {e}")
-        import traceback
-        st.code(traceback.format_exc())
-        return pd.DataFrame()
-
-
 def ensure_sheets():
     ss = get_ss()
     existing = [ws.title for ws in ss.worksheets()]
@@ -349,17 +317,17 @@ def _normalise_date_str(s):
     if not s2:
         return ""
     # Already clean
-    if _re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', s2):
+    if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', s2):
         return s2
-    if _re.match(r'^\d{4}-\d{2}-\d{2}$', s2):
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', s2):
         return s2
     # DMY with dashes 25-11-2023
-    m = _re.match(r'^(\d{1,2})-(\d{1,2})-(\d{4})$', s2)
+    m = re.match(r'^(\d{1,2})-(\d{1,2})-(\d{4})$', s2)
     if m:
         a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
         return f"{a:02d}/{b:02d}/{y}"
     # MDY with slashes 11/25/2023 (US)
-    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
     if m:
         a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if a > 12:
@@ -418,23 +386,18 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
     return results
 
 
-@st.cache_data(ttl=3600)
-def _load_transactions():
-    df = _raw_sheets_data()
-    
-    # DEBUG: Show what _parse_dates returns
-    print("\n=== BEFORE _parse_dates ===")
-    print("Raw values:", df['Date'].head(3).tolist())
-    
-    df['Date'] = _parse_dates(df['Date'])
-    
-    print("\n=== AFTER _parse_dates ===")
-    for i, val in df['Date'].head(3).items():
-        print(f"Row {i}: {val} (type: {type(val).__name__})")
-    
-    return df
-
-@st.cache_data(ttl=3600)
+  @st.cache_data(ttl=20)
+    def _load_transactions():
+        ss   = get_ss()
+        data = ss.worksheet("Transactions").get_all_records()
+        if not data:
+            return pd.DataFrame(columns=HEADERS["Transactions"])
+        df = pd.DataFrame(data)
+        df["Date"]   = _parse_dates(df["Date"])
+        df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
+        return df
+        
+@st.cache_data(ttl=360)
 def load_importlog():
     ss = get_ss()
     try:
@@ -443,13 +406,13 @@ def load_importlog():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_categories():
     ss = get_ss()
     data = ss.worksheet("Categories").get_all_records()
     return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Categories"])
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_cat_freq():
     """
     Return category and subcategory lists derived from actual transaction history,
@@ -505,13 +468,13 @@ def load_cat_freq():
     return cats_sorted, sub_map
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_budgets():
     ss = get_ss()
     data = ss.worksheet("Budgets").get_all_records()
     return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Budgets"])
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_settings():
     ss = get_ss()
     data = ss.worksheet("Settings").get_all_records()
@@ -519,7 +482,7 @@ def load_settings():
         return {k: v for k, v in DEFAULT_SETTINGS}
     return {r["Key"]: r["Value"] for r in data}
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_email_rules():
     ss = get_ss()
     try:
@@ -528,7 +491,7 @@ def load_email_rules():
     except Exception:
         return pd.DataFrame(columns=HEADERS["EmailRules"])
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_parse_errors():
     ss = get_ss()
     try:
@@ -632,7 +595,7 @@ def _bulk_update_merchant_cat(row_ids: list, new_cat: str, new_sub: str):
 
 # ── MERCHANT ALIAS ─────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_merchant_aliases() -> dict:
     """Return {raw_lower: canonical} lookup dict."""
     ss = get_ss()
@@ -672,7 +635,7 @@ def delete_merchant_alias(raw: str):
 
 # ── TELEGRAM ─────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=360)
 def load_telegram_settings() -> dict:
     ss = get_ss()
     try:
