@@ -387,7 +387,7 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
 
 
 @st.cache_data(ttl=20)
-def load_transactions():
+def _load_transactions():
     df = _raw_sheets_data()
     
     # DEBUG: Show what _parse_dates returns
