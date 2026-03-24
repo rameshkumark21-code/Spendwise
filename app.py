@@ -428,7 +428,7 @@ def load_cat_freq():
         cats_sorted  : list of category strings (most-used first)
         sub_map      : dict { category: [subcategory, ...] } (most-used first per cat)
     """
-    df = load_transactions()
+    df = _load_transactions()
     cats_df = load_categories()
 
     if df.empty:
@@ -1303,7 +1303,7 @@ def render_nav():
 def dlg_edit(txn):
     # Frequency-sorted lists — shared cache with Add screen, no extra load
     cats_sorted, sub_map = load_cat_freq()
-    df_all = load_transactions()
+    df_all = _load_transactions()
 
     cur_cat = str(txn.get("Category",""))
     # Keep current category at index 0 if it exists so dialog opens on it
@@ -1429,7 +1429,7 @@ def dlg_bulk_suggest():
     new_sub  = pb["sub"]
     skip_id  = pb["skip_id"]
 
-    df_all = load_transactions()
+    df_all = _load_transactions()
     cats_sorted, sub_map = load_cat_freq()
     settings = load_settings()
     sym      = settings.get("currency_symbol", "₹")
@@ -1576,7 +1576,7 @@ def dlg_bulk_suggest():
 @st.dialog("🗂️ Review Uncategorised Transactions", width="small")
 def dlg_review_misc():
     """Bulk-recategorise all transactions in Others › Miscellaneous."""
-    df_all = load_transactions()
+    df_all = _load_transactions()
     cats_sorted, sub_map = load_cat_freq()
     settings = load_settings()
     sym = settings.get("currency_symbol","₹")
@@ -1671,7 +1671,7 @@ def dlg_review_misc():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_home():
-    df       = load_transactions()
+    df       = _load_transactions()
     settings = load_settings()
     sym      = settings.get("currency_symbol","₹")
     budget   = float(settings.get("monthly_budget", 30000))
@@ -1902,7 +1902,7 @@ def screen_home():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_transactions():
-    df       = load_transactions()
+    df       = _load_transactions()
     settings = load_settings()
     sym      = settings.get("currency_symbol","₹")
 
@@ -2114,7 +2114,7 @@ def screen_transactions():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_add():
-    df_all   = load_transactions()
+    df_all   = _load_transactions()
     settings = load_settings()
     sym      = settings.get("currency_symbol","₹")
     # Frequency-sorted categories from actual transaction history
@@ -2286,7 +2286,7 @@ def screen_add():
         c1, c2 = st.columns(2)
         with c1:
             if st.button("✅  Confirm Import", use_container_width=True, type="primary"):
-                existing = load_transactions()
+                existing = _load_transactions()
                 rows_to_save, skipped = [], 0
                 for pr in prev:
                     is_dup = False
@@ -2319,7 +2319,7 @@ def screen_add():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_analytics():
-    df       = load_transactions()
+    df       = _load_transactions()
     settings = load_settings()
     budgets  = load_budgets()
     sym      = settings.get("currency_symbol","₹")
@@ -3089,7 +3089,7 @@ def screen_settings():
             unsafe_allow_html=True)
 
         if st.button("🔍 Run Date Scan", key="run_date_scan", use_container_width=True):
-            df_scan = load_transactions()
+            df_scan = _load_transactions()
             if df_scan.empty:
                 st.info("No transactions to scan.")
             else:
@@ -3154,7 +3154,7 @@ def screen_settings():
                 with cf1:
                     if st.button(f"🔧 Fix {needs_fix} Dates", key="fix_dates_btn",
                                  type="primary", use_container_width=True):
-                        df_fix  = load_transactions()
+                        df_fix  = _load_transactions()
                         ss      = get_ss()
                         ws      = ss.worksheet("Transactions")
                         all_vals = ws.get_all_values()
@@ -3317,7 +3317,7 @@ def screen_settings():
     # ── EXPORT
     st.markdown('<div class="section-label">Data</div>', unsafe_allow_html=True)
     with st.expander("📤  Export Transactions", expanded=False):
-        df_exp = load_transactions()
+        df_exp = _load_transactions()
         if not df_exp.empty:
             csv = df_exp.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️  Download all transactions as CSV", data=csv,
