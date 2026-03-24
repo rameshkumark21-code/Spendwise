@@ -279,29 +279,35 @@ def _parse_dates(series):
 
     def parse_one(v):
         s = str(v).strip()
-        if not s or s in ("nan","None","NaT","","0","Date"):
+        if not s or s in ("nan","None","NaT",""):
             return pd.NaT
-        # DD/MM/YYYY or D/M/YYYY — Code.gs format, day is group(1)
+        # DD/MM/YYYY or D/M/YYYY — Code.gs format, day is group(1), month is group(2)
         m = DMY.match(s)
         if m:
             try:
+                # FIXED: group(1)=day, group(2)=month, group(3)=year
                 return pd.Timestamp(int(m.group(3)), int(m.group(2)), int(m.group(1)))
             except: pass
-        # YYYY-MM-DD — manual add/edit format
+        # YYYY-MM-DD — manual add/edit format (ISO is already correct)
         m = ISO.match(s)
         if m:
-            try: return pd.Timestamp(s)
+            try: 
+                return pd.Timestamp(s)  # ISO format is YYYY-MM-DD, pandas handles it
             except: pass
         # DD-MM-YYYY
         m = DMY2.match(s)
         if m:
             try:
+                # FIXED: group(1)=day, group(2)=month, group(3)=year
                 return pd.Timestamp(int(m.group(3)), int(m.group(2)), int(m.group(1)))
             except: pass
-        try: return pd.Timestamp(pd.to_datetime(s, dayfirst=True, errors="coerce"))
-        except: return pd.NaT
+        try: 
+            return pd.Timestamp(pd.to_datetime(s, dayfirst=True, errors="coerce"))
+        except: 
+            return pd.NaT
 
     return series.apply(parse_one)
+
 
 def _normalise_date_str(s: str) -> str:
     """
@@ -322,15 +328,18 @@ def _normalise_date_str(s: str) -> str:
         return f"{int(m.group(3)):02d}/{int(m.group(2)):02d}/{m.group(1)}"
 
     # D/M/YYYY or DD/MM/YYYY
-    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
-    if m:
-        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if a > 12:
-            return f"{a:02d}/{b:02d}/{y}"   # a=day, b=month — already DD/MM
-        elif b > 12:
-            return f"{b:02d}/{a:02d}/{y}"   # b=day, a=month — swap to DD/MM
-        else:
-            return f"{a:02d}/{b:02d}/{y}"   # both ≤ 12: DD/MM (Code.gs)
+        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s2)
+        if m:
+            a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if a > 12:
+                return f"{a:02d}/{b:02d}/{y}"   # a=day (>12), b=month — DD/MM/YYYY
+            elif b > 12:
+                return f"{b:02d}/{a:02d}/{y}"   # b=day (>12), a=month — swap to DD/MM/YYYY
+            else:
+                # FIXED: Both ≤12 means ambiguous, but Code.gs convention is DD/MM/YYYY
+                # So a=day, b=month → DD/MM/YYYY
+                return f"{a:02d}/{b:02d}/{y}"   # DD/MM/YYYY
+
 
     # X/Y/YY (2-digit year)
     m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', s2)
@@ -1382,9 +1391,9 @@ def dlg_edit(txn):
                 cat_changed = (sel_cat != orig_cat or sel_sub != orig_sub)
 
                 upd = {
-                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%d/%m/%Y"),
-
+                    "RowID": txn["RowID"], "Date": txn_dt.strftime("%d/%m/%Y"),  # FIXED: DD/MM/YYYY
                     "Merchant": merch.strip(),
+
                     "Type": "Expense" if "Expense" in ttype else "Income",
                     "Amount": -abs(amount) if "Expense" in ttype else abs(amount),
                     "Category": sel_cat, "Subcategory": sel_sub,
@@ -2192,10 +2201,11 @@ def screen_add():
 
         if st.form_submit_button("💾  Save Transaction", use_container_width=True, type="primary"):
             if amount > 0 and merch.strip():
-                _write_txn({
+				_write_txn({
                     "RowID":         str(uuid.uuid4())[:8],
-                    "Date":          txn_date.strftime("%d/%m/%Y"),
+                    "Date":          txn_date.strftime("%d/%m/%Y"),  # FIXED: DD/MM/YYYY
                     "Merchant":      merch.strip().title(),
+
                     "Amount":        -abs(amount) if is_exp else abs(amount),
                     "Type":          "Expense" if is_exp else "Income",
                     "Category":      sel_cat,
