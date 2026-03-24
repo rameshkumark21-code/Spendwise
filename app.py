@@ -418,7 +418,7 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
     return results
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=3600)
 def _load_transactions():
     df = _raw_sheets_data()
     
@@ -434,7 +434,7 @@ def _load_transactions():
     
     return df
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=3600)
 def load_importlog():
     ss = get_ss()
     try:
@@ -443,13 +443,13 @@ def load_importlog():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=3600)
 def load_categories():
     ss = get_ss()
     data = ss.worksheet("Categories").get_all_records()
     return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Categories"])
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=3600)
 def load_cat_freq():
     """
     Return category and subcategory lists derived from actual transaction history,
@@ -505,13 +505,13 @@ def load_cat_freq():
     return cats_sorted, sub_map
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=3600)
 def load_budgets():
     ss = get_ss()
     data = ss.worksheet("Budgets").get_all_records()
     return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Budgets"])
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def load_settings():
     ss = get_ss()
     data = ss.worksheet("Settings").get_all_records()
@@ -519,7 +519,7 @@ def load_settings():
         return {k: v for k, v in DEFAULT_SETTINGS}
     return {r["Key"]: r["Value"] for r in data}
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=3600)
 def load_email_rules():
     ss = get_ss()
     try:
@@ -528,7 +528,7 @@ def load_email_rules():
     except Exception:
         return pd.DataFrame(columns=HEADERS["EmailRules"])
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=3600)
 def load_parse_errors():
     ss = get_ss()
     try:
@@ -632,7 +632,7 @@ def _bulk_update_merchant_cat(row_ids: list, new_cat: str, new_sub: str):
 
 # ── MERCHANT ALIAS ─────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=3600)
 def load_merchant_aliases() -> dict:
     """Return {raw_lower: canonical} lookup dict."""
     ss = get_ss()
@@ -672,7 +672,7 @@ def delete_merchant_alias(raw: str):
 
 # ── TELEGRAM ─────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=3600)
 def load_telegram_settings() -> dict:
     ss = get_ss()
     try:
