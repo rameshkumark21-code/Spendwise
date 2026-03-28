@@ -502,7 +502,7 @@ def load_email_rules():
     except Exception:
         return pd.DataFrame(columns=HEADERS["EmailRules"])
 
-@st.cache_data(ttl=60f)
+@st.cache_data(ttl=60)
 def load_parse_errors():
     ss = get_ss()
     try:
