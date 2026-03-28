@@ -1834,7 +1834,7 @@ def screen_home():
                     ico = cat_icon(pr.iloc[0]) if not pr.empty else "📂"
 
 col_card, col_nav = st.columns([11, 1])
-                with col_card:
+                    with col_card:
                     st.markdown(f"""
                     <div style="
                         display:grid;grid-template-columns:1fr auto auto;
