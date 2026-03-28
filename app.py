@@ -1833,7 +1833,7 @@ def screen_home():
                     pr = exp_df[exp_df["Subcategory"] == lbl]["Category"]
                     ico = cat_icon(pr.iloc[0]) if not pr.empty else "📂"
 
-col_card, col_nav = st.columns([11, 1])
+                    col_card, col_nav = st.columns([11, 1])
                     with col_card:
                     st.markdown(f"""
                     <div style="
