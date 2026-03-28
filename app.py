@@ -2068,7 +2068,7 @@ def screen_transactions():
                    color:{dc}">{"+" if day_total>=0 else "−"}{sym}{abs(day_total):,.0f}</span>
         </div>""", unsafe_allow_html=True)
 
-        for _, row in grp.iterrows():
+        for i, (_, row) in enumerate(grp.iterrows()):
             amt  = row["Amount"]
             ac   = C["income"] if amt>0 else C["expense"]
             sg   = "+" if amt>0 else "−"
@@ -2102,7 +2102,7 @@ def screen_transactions():
                          {sg}{sym}{abs(amt):,.0f}</div>
                 </div>""", unsafe_allow_html=True)
             with c2:
-                if st.button("✏️", key=f"e_{row['RowID']}", help="Edit"):
+                if st.button("✏️", key=f"e_{row['RowID']}_{i}", help="Edit"):
                     st.session_state.edit_txn = row.to_dict(); st.rerun()
 
     if st.session_state.edit_txn:
