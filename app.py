@@ -1833,53 +1833,53 @@ def screen_home():
                     pr = exp_df[exp_df["Subcategory"] == lbl]["Category"]
                     ico = cat_icon(pr.iloc[0]) if not pr.empty else "📂"
 
-col_card, col_nav = st.columns([11, 1])
-                with col_card:
-                    st.markdown(f"""
-                    <div style="
-                        display:grid;grid-template-columns:1fr auto auto;
-                        align-items:center;gap:6px;
-                        padding:6px 8px;margin:1px 0;
-                        background:{C['surface']};border:1px solid {C['border']};
-                        border-radius:8px;border-left:3px solid {colour};">
-                        <div style="min-width:0">
-                            <div style="display:flex;align-items:center;gap:5px">
-                                <span style="font-size:.75rem">{ico}</span>
-                                <span style="font-weight:700;font-size:.78rem;
-                                     white-space:nowrap;overflow:hidden;
-                                     text-overflow:ellipsis;color:{C['text']}">{lbl}</span>
-                            </div>
-                            <div style="height:3px;background:{C['surface2']};border-radius:2px;margin-top:3px">
-                                <div style="height:3px;width:{bar_w}%;background:{colour};border-radius:2px"></div>
-                            </div>
+                st.markdown(f"""
+                <div style="
+                    display:grid;grid-template-columns:1fr auto auto;
+                    align-items:center;gap:6px;
+                    padding:5px 8px;margin:1px 0;
+                    background:{C['surface']};border:1px solid {C['border']};
+                    border-radius:8px;cursor:pointer;
+                    border-left:3px solid {colour};">
+                    <div style="min-width:0">
+                        <div style="display:flex;align-items:center;gap:5px">
+                            <span style="font-size:.75rem">{ico}</span>
+                            <span style="font-weight:700;font-size:.78rem;
+                                 white-space:nowrap;overflow:hidden;
+                                 text-overflow:ellipsis;color:{C['text']}">{lbl}</span>
                         </div>
-                        <div style="font-family:'JetBrains Mono',monospace;
-                             color:{C['expense']};font-size:.76rem;font-weight:700;
-                             white-space:nowrap;text-align:right;padding-right:8px">
-                            {sym}{amt:,.0f}
+                        <div style="height:3px;background:{C['surface2']};border-radius:2px;margin-top:3px">
+                            <div style="height:3px;width:{bar_w}%;background:{colour};border-radius:2px"></div>
                         </div>
-                        <div style="color:{C['muted']};font-size:.65rem;
-                             text-align:right;white-space:nowrap;min-width:28px">
-                            {pct:.0f}%
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-                with col_nav:
-                    if st.button("›", key=f"hb_{i}_{group_col[:3]}", help=f"View {lbl}"):
-                        st.session_state.nav         = "transactions"
-                        st.session_state.f_month     = now.month
-                        st.session_state.f_year      = now.year
-                        st.session_state.search      = ""
-                        st.session_state.acct_filter = "All"
-                        if group_col == "Category":
-                            st.session_state.filter_cat     = lbl
-                            st.session_state.filter_sub_cat = "All"
-                        else:
-                            pr2 = exp_df[exp_df["Subcategory"] == lbl]["Category"]
-                            st.session_state.filter_cat     = pr2.mode()[0] if not pr2.empty else "All"
-                            st.session_state.filter_sub_cat = lbl
-                        st.rerun()
+                    </div>
+                    <div style="font-family:'JetBrains Mono',monospace;
+                         color:{C['expense']};font-size:.76rem;font-weight:700;
+                         white-space:nowrap;text-align:right;padding-right:8px">
+                        {sym}{amt:,.0f}
+                    </div>
+                    <div style="color:{C['muted']};font-size:.65rem;
+                         text-align:right;white-space:nowrap;min-width:30px">
+                        {pct:.0f}%
+                    </div>
+                </div>""", unsafe_allow_html=True)
 
-
+                # Single full-width transparent button covering the row
+                st.markdown('<div class="home-cat-btn" style="margin-top:-38px;height:38px;overflow:hidden">', unsafe_allow_html=True)
+                if st.button(f"{ico} {lbl}", key=f"hb_{i}_{group_col[:3]}", use_container_width=True):
+                    st.session_state.nav         = "transactions"
+                    st.session_state.f_month     = now.month
+                    st.session_state.f_year      = now.year
+                    st.session_state.search      = ""
+                    st.session_state.acct_filter = "All"
+                    if group_col == "Category":
+                        st.session_state.filter_cat     = lbl
+                        st.session_state.filter_sub_cat = "All"
+                    else:
+                        pr2 = exp_df[exp_df["Subcategory"] == lbl]["Category"]
+                        st.session_state.filter_cat     = pr2.mode()[0] if not pr2.empty else "All"
+                        st.session_state.filter_sub_cat = lbl
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
 
         # ── RECENT TRANSACTIONS
     st.markdown('<div class="section-label">Recent</div>', unsafe_allow_html=True)
