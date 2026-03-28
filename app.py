@@ -1834,35 +1834,35 @@ def screen_home():
                     ico = cat_icon(pr.iloc[0]) if not pr.empty else "📂"
 
                     col_card, col_nav = st.columns([11, 1])
-                    with col_card:
-                    st.markdown(f"""
-                    <div style="
-                        display:grid;grid-template-columns:1fr auto auto;
-                        align-items:center;gap:6px;
-                        padding:6px 8px;margin:1px 0;
-                        background:{C['surface']};border:1px solid {C['border']};
-                        border-radius:8px;border-left:3px solid {colour};">
-                        <div style="min-width:0">
-                            <div style="display:flex;align-items:center;gap:5px">
-                                <span style="font-size:.75rem">{ico}</span>
-                                <span style="font-weight:700;font-size:.78rem;
-                                     white-space:nowrap;overflow:hidden;
-                                     text-overflow:ellipsis;color:{C['text']}">{lbl}</span>
+                    with col_card:with col_card:
+                        st.markdown(f"""
+                        <div style="
+                            display:grid;grid-template-columns:1fr auto auto;
+                            align-items:center;gap:6px;
+                            padding:6px 8px;margin:1px 0;
+                            background:{C['surface']};border:1px solid {C['border']};
+                            border-radius:8px;border-left:3px solid {colour};">
+                            <div style="min-width:0">
+                                <div style="display:flex;align-items:center;gap:5px">
+                                    <span style="font-size:.75rem">{ico}</span>
+                                    <span style="font-weight:700;font-size:.78rem;
+                                         white-space:nowrap;overflow:hidden;
+                                         text-overflow:ellipsis;color:{C['text']}">{lbl}</span>
+                                </div>
+                                <div style="height:3px;background:{C['surface2']};border-radius:2px;margin-top:3px">
+                                    <div style="height:3px;width:{bar_w}%;background:{colour};border-radius:2px"></div>
+                                </div>
                             </div>
-                            <div style="height:3px;background:{C['surface2']};border-radius:2px;margin-top:3px">
-                                <div style="height:3px;width:{bar_w}%;background:{colour};border-radius:2px"></div>
+                            <div style="font-family:'JetBrains Mono',monospace;
+                                 color:{C['expense']};font-size:.76rem;font-weight:700;
+                                 white-space:nowrap;text-align:right;padding-right:8px">
+                                {sym}{amt:,.0f}
                             </div>
-                        </div>
-                        <div style="font-family:'JetBrains Mono',monospace;
-                             color:{C['expense']};font-size:.76rem;font-weight:700;
-                             white-space:nowrap;text-align:right;padding-right:8px">
-                            {sym}{amt:,.0f}
-                        </div>
-                        <div style="color:{C['muted']};font-size:.65rem;
-                             text-align:right;white-space:nowrap;min-width:28px">
-                            {pct:.0f}%
-                        </div>
-                    </div>""", unsafe_allow_html=True)
+                            <div style="color:{C['muted']};font-size:.65rem;
+                                 text-align:right;white-space:nowrap;min-width:28px">
+                                {pct:.0f}%
+                            </div>
+                        </div>""", unsafe_allow_html=True)
                 with col_nav:
                     if st.button("›", key=f"hb_{i}_{group_col[:3]}", help=f"View {lbl}"):
                         st.session_state.nav         = "transactions"
