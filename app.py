@@ -1079,17 +1079,20 @@ footer, #MainMenu {{ display:none !important; }}
 }}
 
 .home-cat-btn [data-testid="stButton"] > button {{
-    background: {C["surface"]} !important;
-    border: 1px solid {C["border"]} !important;
-    border-radius: 10px !important;
-    color: {C["text"]} !important;
-    font-size: .82rem !important; font-weight: 700 !important;
-    text-align: left !important; justify-content: flex-start !important;
-    padding: 8px 12px !important; margin-bottom: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 8px !important;
+    color: transparent !important;
+    font-size: .01rem !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    height: 38px !important;
+    min-height: unset !important;
+    box-shadow: none !important;
+    cursor: pointer !important;
 }}
 .home-cat-btn [data-testid="stButton"] > button:hover {{
-    border-color: {C["primary"]} !important;
-    background: rgba(124,109,248,0.08) !important;
+    background: rgba(124,109,248,0.06) !important;
 }}
 
 /* FAB */
@@ -1793,28 +1796,36 @@ def screen_home():
             tog_c1, tog_c2 = st.columns(2)
             with tog_c1:
                 is_cat = (st.session_state.home_cat_view == "Category")
-                st.markdown(f'<div class="{"pill-on" if is_cat else "pill-off"}">', unsafe_allow_html=True)
+                st.markdown(f'<div class="{"pill-on" if is_cat else "pill-off"}" style="margin-bottom:4px">', unsafe_allow_html=True)
                 if st.button("Category", key="home_tog_cat"):
                     st.session_state.home_cat_view = "Category"; st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
             with tog_c2:
                 is_sub = (st.session_state.home_cat_view == "Subcategory")
-                st.markdown(f'<div class="{"pill-on" if is_sub else "pill-off"}">', unsafe_allow_html=True)
+                st.markdown(f'<div class="{"pill-on" if is_sub else "pill-off"}" style="margin-bottom:4px">', unsafe_allow_html=True)
                 if st.button("Subcategory", key="home_tog_sub"):
                     st.session_state.home_cat_view = "Subcategory"; st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
-
             group_col = st.session_state.home_cat_view
             grp = (exp_df.groupby(group_col)["Abs"].sum()
                    .reset_index().rename(columns={group_col:"Label","Abs":"Amount"})
                    .sort_values("Amount", ascending=False))
             max_amt = grp["Amount"].max() if not grp.empty else 1
 
+# Compact table header
+            st.markdown(f"""
+            <div style="display:grid;grid-template-columns:1fr auto auto;
+                 padding:3px 8px;margin-bottom:1px;
+                 font-size:.58rem;font-weight:800;letter-spacing:.8px;
+                 text-transform:uppercase;color:{C['muted']}">
+                <span>Name</span><span style="text-align:right;padding-right:12px">Spent</span><span style="text-align:right">%</span>
+            </div>""", unsafe_allow_html=True)
+
             for i, (_, row) in enumerate(grp.iterrows()):
                 lbl    = str(row["Label"])
                 amt    = row["Amount"]
                 pct    = amt / total_exp_home * 100
-                bar_w  = (amt / max_amt * 100)
+                bar_w  = int(amt / max_amt * 100)
                 colour = PALETTE[i % len(PALETTE)]
                 if group_col == "Category":
                     ico = cat_icon(lbl)
@@ -1822,33 +1833,39 @@ def screen_home():
                     pr = exp_df[exp_df["Subcategory"] == lbl]["Category"]
                     ico = cat_icon(pr.iloc[0]) if not pr.empty else "📂"
 
-                # Compact row: icon | label + bar | amount + pct
-                col_info, col_amt = st.columns([6, 2])
-                with col_info:
-                    st.markdown(f"""
-                    <div style="display:flex;align-items:center;gap:7px;padding:3px 0 0">
-                        <span style="font-size:.82rem;flex-shrink:0">{ico}</span>
-                        <div style="flex:1;min-width:0">
-                            <div style="font-weight:700;font-size:.78rem;white-space:nowrap;
-                                 overflow:hidden;text-overflow:ellipsis;color:{C['text']}">{lbl}</div>
-                            <div class="bar-wrap" style="height:4px;margin:3px 0 2px">
-                                <div class="bar-fill"
-                                     style="width:{bar_w:.0f}%;background:{colour}"></div>
-                            </div>
+                st.markdown(f"""
+                <div style="
+                    display:grid;grid-template-columns:1fr auto auto;
+                    align-items:center;gap:6px;
+                    padding:5px 8px;margin:1px 0;
+                    background:{C['surface']};border:1px solid {C['border']};
+                    border-radius:8px;cursor:pointer;
+                    border-left:3px solid {colour};">
+                    <div style="min-width:0">
+                        <div style="display:flex;align-items:center;gap:5px">
+                            <span style="font-size:.75rem">{ico}</span>
+                            <span style="font-weight:700;font-size:.78rem;
+                                 white-space:nowrap;overflow:hidden;
+                                 text-overflow:ellipsis;color:{C['text']}">{lbl}</span>
                         </div>
-                    </div>""", unsafe_allow_html=True)
-                with col_amt:
-                    st.markdown(f"""
-                    <div style="text-align:right;padding:3px 0 0">
-                        <div style="font-family:'JetBrains Mono',monospace;color:{C['expense']};
-                             font-size:.78rem;font-weight:700">{sym}{amt:,.0f}</div>
-                        <div style="color:{C['muted']};font-size:.6rem">{pct:.1f}%</div>
-                    </div>""", unsafe_allow_html=True)
+                        <div style="height:3px;background:{C['surface2']};border-radius:2px;margin-top:3px">
+                            <div style="height:3px;width:{bar_w}%;background:{colour};border-radius:2px"></div>
+                        </div>
+                    </div>
+                    <div style="font-family:'JetBrains Mono',monospace;
+                         color:{C['expense']};font-size:.76rem;font-weight:700;
+                         white-space:nowrap;text-align:right;padding-right:8px">
+                        {sym}{amt:,.0f}
+                    </div>
+                    <div style="color:{C['muted']};font-size:.65rem;
+                         text-align:right;white-space:nowrap;min-width:30px">
+                        {pct:.0f}%
+                    </div>
+                </div>""", unsafe_allow_html=True)
 
-                # Invisible full-width tap target overlaid using zero-height button
-                st.markdown(f'<div style="margin-top:-36px;height:36px;overflow:hidden;">', unsafe_allow_html=True)
-                st.markdown(f'<div class="home-cat-btn" style="opacity:0;margin:0">', unsafe_allow_html=True)
-                if st.button(lbl, key=f"hb_{i}_{group_col[:3]}", use_container_width=True):
+                # Single full-width transparent button covering the row
+                st.markdown('<div class="home-cat-btn" style="margin-top:-38px;height:38px;overflow:hidden">', unsafe_allow_html=True)
+                if st.button(f"{ico} {lbl}", key=f"hb_{i}_{group_col[:3]}", use_container_width=True):
                     st.session_state.nav         = "transactions"
                     st.session_state.f_month     = now.month
                     st.session_state.f_year      = now.year
@@ -1862,7 +1879,7 @@ def screen_home():
                         st.session_state.filter_cat     = pr2.mode()[0] if not pr2.empty else "All"
                         st.session_state.filter_sub_cat = lbl
                     st.rerun()
-                st.markdown('</div></div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
 
         # ── RECENT TRANSACTIONS
     st.markdown('<div class="section-label">Recent</div>', unsafe_allow_html=True)
