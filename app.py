@@ -2119,8 +2119,10 @@ def screen_transactions():
                          {sg}{sym}{abs(amt):,.0f}</div>
                 </div>""", unsafe_allow_html=True)
             with c2:
-                if st.button("✏️", key=f"e_{row['RowID']}_{i}", help="Edit"):
-                    st.session_state.edit_txn = row.to_dict(); st.rerun()
+                rid = str(row.get('RowID', '')).strip().replace('.','_') or str(i)
+                if st.button("✏️", key=f"e_{rid}_{i}", help="Edit"):
+                    st.session_state.edit_txn = row.to_dict();
+                    st.rerun()
 
     if st.session_state.edit_txn:
         dlg_edit(st.session_state.edit_txn)
