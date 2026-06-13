@@ -2630,20 +2630,33 @@ def screen_analytics():
     else:
         st.markdown(f"<div style='color:{C['muted']};font-size:.8rem'>Need 2+ months of data.</div>", unsafe_allow_html=True)
 
+
     # ── TOP MERCHANTS
     st.markdown('<div class="section-label">Top Merchants</div>', unsafe_allow_html=True)
     tm = exp_df.groupby("Merchant")["Abs"].sum().sort_values(ascending=False).head(8)
+    all_exp_tm = filter_by_account(df[df["Amount"]<0].copy(), st.session_state.ana_acct_filter)
+    all_exp_tm["Abs"] = all_exp_tm["Amount"].abs()
     for merchant, amt in tm.items():
         cnt = len(exp_df[exp_df["Merchant"]==merchant])
+        hist = all_exp_tm[all_exp_tm["Merchant"]==merchant]
+        m3  = hist[hist["Date"] >= pd.Timestamp.now() - pd.DateOffset(months=3)]["Abs"].sum()
+        m6  = hist[hist["Date"] >= pd.Timestamp.now() - pd.DateOffset(months=6)]["Abs"].sum()
+        m12 = hist[hist["Date"] >= pd.Timestamp.now() - pd.DateOffset(months=12)]["Abs"].sum()
         st.markdown(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;
-             padding:6px 2px;border-bottom:1px solid {C['border']}">
-            <div>
-                <div style="font-weight:700;font-size:.8rem">{merchant[:30]}</div>
-                <div style="font-size:.65rem;color:{C['muted']}">{cnt} txn{"s" if cnt>1 else ""}</div>
+        <div style="padding:7px 2px;border-bottom:1px solid {C['border']}">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                    <div style="font-weight:700;font-size:.8rem">{merchant[:30]}</div>
+                    <div style="font-size:.65rem;color:{C['muted']}">{cnt} txn{"s" if cnt>1 else ""} this month</div>
+                </div>
+                <div style="font-family:'JetBrains Mono',monospace;color:{C['expense']};
+                     font-size:.85rem;font-weight:600">{sym}{amt:,.0f}</div>
             </div>
-            <div style="font-family:'JetBrains Mono',monospace;color:{C['expense']};font-size:.85rem;font-weight:600">
-                {sym}{amt:,.0f}</div>
+            <div style="display:flex;gap:10px;margin-top:4px">
+                <span style="font-size:.65rem;color:{C['muted']}">3M: <b style="color:{C['text']}">{sym}{m3:,.0f}</b></span>
+                <span style="font-size:.65rem;color:{C['muted']}">6M: <b style="color:{C['text']}">{sym}{m6:,.0f}</b></span>
+                <span style="font-size:.65rem;color:{C['muted']}">12M: <b style="color:{C['text']}">{sym}{m12:,.0f}</b></span>
+            </div>
         </div>""", unsafe_allow_html=True)
 
 
