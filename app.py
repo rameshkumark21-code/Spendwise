@@ -1918,34 +1918,54 @@ def screen_home():
             <div style="color:{C['muted']};font-size:.85rem">Tap ➕ to add your first expense</div>
         </div>""", unsafe_allow_html=True)
     else:
-        recent = df.sort_values("Date", ascending=False).head(6)
+        n_recent = st.session_state.get("home_recent_n", 10)
+        recent = df.sort_values("Date", ascending=False).head(n_recent)
         for _, row in recent.iterrows():
             amt  = row["Amount"]
             ac   = C["income"] if amt > 0 else C["expense"]
             sg   = "+" if amt > 0 else "−"
             ico  = cat_icon(row["Category"])
             ds   = row["Date"].strftime("%d %b") if pd.notna(row["Date"]) else ""
+
             tag  = str(row.get("Tags","")).strip()
-            acct_html = f"&nbsp;{account_badge_html(tag, inline=True)}" if tag else ""
+            acct_html = (f'&nbsp;<span style="background:white;color:#0d1117;font-size:.58rem;'
+                         f'font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:20px;'
+                         f'text-transform:uppercase;white-space:nowrap;display:inline-block">{tag}</span>') if tag else ""
+            cat_ds_html = (f'<span style="background:rgba(88,166,255,0.15);color:{C["info"]};'
+                           f'border:1px solid rgba(88,166,255,0.4);'
+                           f'box-shadow:0 0 6px rgba(88,166,255,0.3);'
+                           f'font-size:.62rem;font-weight:700;padding:2px 7px;'
+                           f'border-radius:6px;white-space:nowrap">'
+                           f'{row["Category"]} · {ds}</span>')
             st.markdown(f"""
             <div class="txn-row">
                 <div class="txn-icon">{ico}</div>
                 <div style="flex:1;min-width:0;overflow:hidden">
                     <div style="font-weight:700;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{row['Merchant']}</div>
-                    <div style="font-size:.72rem;color:{C['muted']}">{row['Category']} · {ds}{acct_html}</div>
+                    <div style="font-size:.72rem;margin-top:3px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+                        {cat_ds_html}{acct_html}
+                    </div>
                 </div>
                 <div class="mono" style="color:{ac};font-size:.9rem;flex-shrink:0">{sg}{sym}{abs(amt):,.0f}</div>
             </div>""", unsafe_allow_html=True)
 
-        st.markdown(f'<div style="margin-top:10px">', unsafe_allow_html=True)
-        if st.button("View All Transactions →", use_container_width=True, type="primary"):
-            st.session_state.nav = "transactions"
-            st.session_state.filter_cat     = "All"
-            st.session_state.filter_sub_cat = "All"
-            st.session_state.f_month = 0
-            st.session_state.f_year  = 0
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+
+        c_dd, c_btn = st.columns([2,3])
+        with c_dd:
+            n_sel = st.selectbox("", [10,20,30,40,50],
+                index=[10,20,30,40,50].index(n_recent),
+                key="home_recent_dd", label_visibility="collapsed",
+                format_func=lambda x: f"Display {x}")
+            if n_sel != n_recent:
+                st.session_state.home_recent_n = n_sel; st.rerun()
+        with c_btn:
+            if st.button("View All Transactions →", use_container_width=True, type="primary"):
+                st.session_state.nav = "transactions"
+                st.session_state.filter_cat     = "All"
+                st.session_state.filter_sub_cat = "All"
+                st.session_state.f_month = 0
+                st.session_state.f_year  = 0
+                st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
