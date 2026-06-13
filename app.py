@@ -2603,6 +2603,33 @@ def screen_analytics():
     )
     st.plotly_chart(fig_l, use_container_width=True, config={"displayModeBar":False})
 
+ # ── RECURRING EXPENSES
+    st.markdown('<div class="section-label">Recurring Expenses</div>', unsafe_allow_html=True)
+    all_exp_r = filter_by_account(df, st.session_state.ana_acct_filter)
+    all_exp_r = all_exp_r[all_exp_r["Amount"] < 0].copy()
+    all_exp_r["Mon"] = all_exp_r["Date"].dt.to_period("M")
+    months_available = all_exp_r["Mon"].nunique()
+    if months_available >= 2:
+        merch_months = all_exp_r.groupby(["Merchant","Mon"]).size().reset_index()
+        recurring = merch_months.groupby("Merchant")["Mon"].count()
+        recurring = recurring[recurring >= min(3, months_available)].index.tolist()
+        rec_df = all_exp_r[all_exp_r["Merchant"].isin(recurring)]
+        rec_sum = rec_df.groupby("Merchant")["Amount"].mean().abs().sort_values(ascending=False)
+        for merchant, avg in rec_sum.head(8).items():
+            months_seen = merch_months[merch_months["Merchant"]==merchant]["Mon"].count()
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;align-items:center;
+                 padding:7px 2px;border-bottom:1px solid {C['border']}">
+                <div>
+                    <div style="font-weight:700;font-size:.8rem">{merchant[:30]}</div>
+                    <div style="font-size:.65rem;color:{C['muted']}">seen {months_seen} of last {months_available} months</div>
+                </div>
+                <div style="font-family:'JetBrains Mono',monospace;color:{C['warning']};
+                     font-size:.85rem;font-weight:600">~{sym}{avg:,.0f}/mo</div>
+            </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div style='color:{C['muted']};font-size:.8rem'>Need 2+ months of data.</div>", unsafe_allow_html=True)
+
     # ── TOP MERCHANTS
     st.markdown('<div class="section-label">Top Merchants</div>', unsafe_allow_html=True)
     tm = exp_df.groupby("Merchant")["Abs"].sum().sort_values(ascending=False).head(8)
