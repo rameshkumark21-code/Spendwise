@@ -2169,8 +2169,8 @@ def screen_transactions():
                                 font-size:.62rem;font-weight:700;padding:2px 7px;
                                 border-radius:6px;white-space:nowrap">{sub}{(" · " + pm) if pm else ""}</span>
                             {acct_badge}{auto_badge}
-                        </div>
-                    </div>
+                        </div>""", unsafe_allow_html=True)
+                </div>
                     <div style="font-family:'JetBrains Mono',monospace;color:{ac};
                          font-size:.82rem;flex-shrink:0;font-weight:600">
                          {sg}{sym}{abs(amt):,.0f}</div>
