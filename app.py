@@ -775,8 +775,8 @@ def _update_email_rule(rule_name, upd):
 #  SMART CATEGORISATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def auto_cat(merchant: str, cats_df: pd.DataFrame):
-    m = merchant.lower().strip()
+def auto_cat(merchant: str, cats_df: pd.DataFrame, remarks: str = ""):
+    m = (merchant + " " + remarks).lower().strip()
     for _, row in cats_df.iterrows():
         kws = str(row.get("Keywords", "")).lower()
         if not kws:
@@ -2283,7 +2283,8 @@ def screen_add():
                         else:
                             signed = raw_a
                             tval   = "Income" if raw_a > 0 else "Expense"
-                        cat, sub, conf = auto_cat(raw_m, cats_df2)
+                        raw_r = str(r.get("Remarks","")).strip()
+                        cat, sub, conf = auto_cat(raw_m, cats_df2, raw_r)
                         # Normalise date to MM/DD/YYYY
                         raw_date_str = str(r.get(date_col,"")).strip()
                         norm_date = _normalise_date_str(raw_date_str)
