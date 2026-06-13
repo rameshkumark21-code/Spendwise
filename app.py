@@ -2665,6 +2665,45 @@ def screen_analytics():
                 </div>
             </div>""", unsafe_allow_html=True)
 
+
+    # ── WEEKLY DIGEST
+    st.markdown('<div class="section-label">Weekly Digest</div>', unsafe_allow_html=True)
+    today = pd.Timestamp.now()
+    week_start = today - pd.Timedelta(days=today.dayofweek)
+    lweek_start = week_start - pd.Timedelta(days=7)
+    all_exp_w = filter_by_account(df[df["Amount"]<0].copy(), st.session_state.ana_acct_filter)
+    all_exp_w["Abs"] = all_exp_w["Amount"].abs()
+    this_w = all_exp_w[all_exp_w["Date"] >= week_start]["Abs"].sum()
+    last_w = all_exp_w[(all_exp_w["Date"] >= lweek_start) & (all_exp_w["Date"] < week_start)]["Abs"].sum()
+    top_cat_w = all_exp_w[all_exp_w["Date"] >= week_start].groupby("Category")["Abs"].sum()
+    top_cat_w = top_cat_w.idxmax() if not top_cat_w.empty else "—"
+    biggest = all_exp_w[all_exp_w["Date"] >= week_start].nlargest(1,"Abs")
+    big_merch = biggest.iloc[0]["Merchant"] if not biggest.empty else "—"
+    big_amt = biggest.iloc[0]["Abs"] if not biggest.empty else 0
+    delta_w = ((this_w - last_w)/last_w*100) if last_w > 0 else 0
+    dw_c = C["expense"] if delta_w > 0 else C["income"]
+    st.markdown(f"""
+    <div class="card" style="padding:12px 14px">
+        <div style="font-size:.65rem;color:{C['muted']};font-weight:800;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">This Week vs Last Week</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div><div style="font-size:.7rem;color:{C['muted']}">This week</div>
+                <div style="font-family:'JetBrains Mono',monospace;color:{C['expense']};font-weight:700;font-size:1.1rem">{sym}{this_w:,.0f}</div></div>
+            <div style="font-size:1.2rem;color:{dw_c}">{"▲" if delta_w>0 else "▼"} {abs(delta_w):.0f}%</div>
+            <div style="text-align:right"><div style="font-size:.7rem;color:{C['muted']}">Last week</div>
+                <div style="font-family:'JetBrains Mono',monospace;color:{C['muted']};font-weight:700;font-size:1.1rem">{sym}{last_w:,.0f}</div></div>
+        </div>
+        <div style="display:flex;gap:8px">
+            <div style="flex:1;background:{C['surface2']};border-radius:8px;padding:7px 10px">
+                <div style="font-size:.6rem;color:{C['muted']};text-transform:uppercase;font-weight:800">Top Category</div>
+                <div style="font-size:.78rem;font-weight:700;margin-top:2px">{cat_icon(top_cat_w)} {top_cat_w}</div>
+            </div>
+            <div style="flex:1;background:{C['surface2']};border-radius:8px;padding:7px 10px">
+                <div style="font-size:.6rem;color:{C['muted']};text-transform:uppercase;font-weight:800">Biggest Spend</div>
+                <div style="font-size:.78rem;font-weight:700;margin-top:2px">{big_merch[:18]} · {sym}{big_amt:,.0f}</div>
+            </div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+    
     # ── ANOMALY ALERTS
     st.markdown('<div class="section-label">Anomaly Alerts</div>', unsafe_allow_html=True)
     all_exp_a = filter_by_account(df[df["Amount"]<0].copy(), st.session_state.ana_acct_filter)
