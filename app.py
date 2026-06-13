@@ -2151,6 +2151,7 @@ def screen_transactions():
                           f'text-overflow:ellipsis">{notes}</div>') if notes else ""
 
             c1, c2 = st.columns([5,1])
+
             with c1:
                 st.markdown(f"""
                 <div style="display:flex;align-items:center;gap:8px;padding:5px 0;
@@ -2159,7 +2160,6 @@ def screen_transactions():
                     <div style="flex:1;min-width:0">
                         <div style="font-weight:700;font-size:.8rem;white-space:nowrap;
                              overflow:hidden;text-overflow:ellipsis">{merch}</div>
-
                         <div style="font-size:.64rem;margin-top:1px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
                             <span style="background:rgba(88,166,255,0.15);color:{C['info']};
                                 border:1px solid rgba(88,166,255,0.4);
@@ -2167,8 +2167,8 @@ def screen_transactions():
                                 font-size:.62rem;font-weight:700;padding:2px 7px;
                                 border-radius:6px;white-space:nowrap">{sub}{(" · " + pm) if pm else ""}</span>
                             {acct_badge}{auto_badge}
-                        </div>""", unsafe_allow_html=True)
-                </div>
+                        </div>
+                    </div>
                     <div style="font-family:'JetBrains Mono',monospace;color:{ac};
                          font-size:.82rem;flex-shrink:0;font-weight:600">
                          {sg}{sym}{abs(amt):,.0f}</div>
