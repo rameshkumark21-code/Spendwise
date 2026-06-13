@@ -2604,6 +2604,40 @@ def screen_analytics():
     st.plotly_chart(fig_l, use_container_width=True, config={"displayModeBar":False})
 
 
+
+    # ── 50/30/20 RULE TRACKER
+    NEEDS = ["Bills & Utilities","Health","Transport","Rent & Housing","Food & Dining","Groceries"]
+    WANTS = ["Entertainment","Shopping","Personal Care","Travel","Gifts & Social","Food & Dining"]
+    SAVES = ["Investments"]
+    total_inc = mdf[mdf["Amount"]>0]["Amount"].sum()
+    if total_inc > 0:
+        st.markdown('<div class="section-label">50/30/20 Rule</div>', unsafe_allow_html=True)
+        buckets = {"Needs":0, "Wants":0, "Savings":0}
+        for _, r in exp_df.iterrows():
+            cat = str(r.get("Category",""))
+            if cat in SAVES: buckets["Savings"] += r["Abs"]
+            elif cat in NEEDS: buckets["Needs"] += r["Abs"]
+            elif cat in WANTS: buckets["Wants"] += r["Abs"]
+            else: buckets["Needs"] += r["Abs"]
+        targets = {"Needs":50,"Wants":30,"Savings":20}
+        icons   = {"Needs":"🏠","Wants":"🎯","Savings":"💰"}
+        for bucket, target in targets.items():
+            actual_pct = buckets[bucket]/total_inc*100
+            t_color = C["income"] if actual_pct <= target else C["expense"]
+            st.markdown(f"""
+            <div style="padding:6px 2px;border-bottom:1px solid {C['border']}">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                    <span style="font-weight:700;font-size:.8rem">{icons[bucket]} {bucket}</span>
+                    <span style="font-size:.75rem">
+                        <span style="font-family:'JetBrains Mono',monospace;color:{t_color}">{actual_pct:.0f}%</span>
+                        <span style="color:{C['muted']}"> / target {target}%</span>
+                    </span>
+                </div>
+                <div class="bar-wrap" style="height:5px">
+                    <div class="bar-fill" style="width:{min(actual_pct/target*100,100):.0f}%;background:{t_color}"></div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
     # ── ANOMALY ALERTS
     st.markdown('<div class="section-label">Anomaly Alerts</div>', unsafe_allow_html=True)
     all_exp_a = filter_by_account(df[df["Amount"]<0].copy(), st.session_state.ana_acct_filter)
