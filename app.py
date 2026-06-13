@@ -2142,8 +2142,11 @@ def screen_transactions():
             pm    = str(row.get("PaymentMethod",""))
             tag   = str(row.get("Tags","")).strip()
             notes = str(row.get("Notes","")).strip()
+
             auto_badge = ' <span class="badge-auto">A</span>' if str(row.get("AutoCat","")).lower()=="yes" else ""
-            acct_badge = f" {account_badge_html(tag, inline=True)}" if tag else ""
+            acct_badge = (f'&nbsp;<span style="background:white;color:#0d1117;font-size:.58rem;'
+                         f'font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:20px;'
+                         f'text-transform:uppercase;white-space:nowrap;display:inline-block">{tag}</span>') if tag else ""
             merch = str(row["Merchant"])[:32]
             notes_html = (f'<div style="font-size:.62rem;color:{C["muted"]};margin-top:1px;'
                           f'font-style:italic;white-space:nowrap;overflow:hidden;'
@@ -2158,8 +2161,14 @@ def screen_transactions():
                     <div style="flex:1;min-width:0">
                         <div style="font-weight:700;font-size:.8rem;white-space:nowrap;
                              overflow:hidden;text-overflow:ellipsis">{merch}</div>
-                        <div style="font-size:.64rem;color:{C['muted']};margin-top:1px">
-                            {sub}{(" · " + pm) if pm else ""}{acct_badge}{auto_badge}
+
+                        <div style="font-size:.64rem;margin-top:1px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+                            <span style="background:rgba(88,166,255,0.15);color:{C['info']};
+                                border:1px solid rgba(88,166,255,0.4);
+                                box-shadow:0 0 6px rgba(88,166,255,0.3);
+                                font-size:.62rem;font-weight:700;padding:2px 7px;
+                                border-radius:6px;white-space:nowrap">{sub}{(" · " + pm) if pm else ""}</span>
+                            {acct_badge}{auto_badge}
                         </div>{notes_html}
                     </div>
                     <div style="font-family:'JetBrains Mono',monospace;color:{ac};
