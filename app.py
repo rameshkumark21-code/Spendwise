@@ -2603,7 +2603,43 @@ def screen_analytics():
     )
     st.plotly_chart(fig_l, use_container_width=True, config={"displayModeBar":False})
 
- # ── RECURRING EXPENSES
+
+    # ── ANOMALY ALERTS
+    st.markdown('<div class="section-label">Anomaly Alerts</div>', unsafe_allow_html=True)
+    all_exp_a = filter_by_account(df[df["Amount"]<0].copy(), st.session_state.ana_acct_filter)
+    all_exp_a["Abs"] = all_exp_a["Amount"].abs()
+    anomalies = []
+    for merchant in exp_df["Merchant"].unique():
+        this_m = exp_df[exp_df["Merchant"]==merchant]["Abs"].sum()
+        hist = all_exp_a[
+            (all_exp_a["Merchant"]==merchant) &
+            (all_exp_a["Date"] < pd.Timestamp(ms))
+        ]["Abs"]
+        if len(hist) < 2: continue
+        avg = hist.mean()
+        if avg > 0 and this_m >= avg * 1.8:
+            anomalies.append((merchant, this_m, avg))
+    if anomalies:
+        for merchant, this_m, avg in sorted(anomalies, key=lambda x: -x[1])[:5]:
+            ratio = this_m / avg
+            st.markdown(f"""
+            <div style="background:rgba(255,79,109,.07);border:1px solid rgba(255,79,109,.25);
+                 border-radius:10px;padding:9px 12px;margin:4px 0">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div>
+                        <div style="font-weight:700;font-size:.8rem">⚠️ {merchant[:28]}</div>
+                        <div style="font-size:.65rem;color:{C['muted']}">usual avg: {sym}{avg:,.0f}/mo</div>
+                    </div>
+                    <div style="text-align:right">
+                        <div style="font-family:'JetBrains Mono',monospace;color:{C['expense']};font-weight:700">{sym}{this_m:,.0f}</div>
+                        <div style="font-size:.65rem;color:{C['expense']}">{ratio:.1f}x normal</div>
+                    </div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div style='color:{C['muted']};font-size:.8rem'>No anomalies detected this month.</div>", unsafe_allow_html=True)
+
+    # ── RECURRING EXPENSES
     st.markdown('<div class="section-label">Recurring Expenses</div>', unsafe_allow_html=True)
     all_exp_r = filter_by_account(df, st.session_state.ana_acct_filter)
     all_exp_r = all_exp_r[all_exp_r["Amount"] < 0].copy()
