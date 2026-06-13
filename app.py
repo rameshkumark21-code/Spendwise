@@ -3544,6 +3544,62 @@ def screen_settings():
                 else:
                     st.error("Enter both names.")
 
+FEATURE 3 — Smart Budget Suggestions — screen_settings()
+pythonOLD:
+    # ── EXPORT
+
+NEW:
+    # ── SMART BUDGET SUGGESTIONS
+    st.markdown('<div class="section-label">Smart Budget Suggestions</div>', unsafe_allow_html=True)
+    with st.expander("💡 AI-suggested budgets based on last 3 months", expanded=False):
+        df_b = _load_transactions()
+        if df_b.empty:
+            st.info("Need transaction history to suggest budgets.")
+        else:
+            cutoff3 = pd.Timestamp.now() - pd.DateOffset(months=3)
+            hist3 = df_b[(df_b["Amount"]<0) & (df_b["Date"] >= cutoff3)].copy()
+            hist3["Abs"] = hist3["Amount"].abs()
+            suggestions = hist3.groupby("Category")["Abs"].sum() / 3
+            suggestions = suggestions.sort_values(ascending=False)
+            bmap = dict(zip(budgets["Category"], budgets["MonthlyBudget"].astype(float))) if not budgets.empty else {}
+            st.markdown(f"<div style='font-size:.75rem;color:{C['muted']};margin-bottom:8px'>Based on your average monthly spend over last 3 months. Tap Accept to apply.</div>", unsafe_allow_html=True)
+            new_budgets = dict(bmap)
+            any_accepted = False
+            for cat, suggested in suggestions.items():
+                current = bmap.get(cat, 0)
+                diff = suggested - current
+                diff_c = C["expense"] if diff > 0 else C["income"]
+                diff_s = f"+{sym}{abs(diff):,.0f}" if diff > 0 else f"-{sym}{abs(diff):,.0f}"
+                ico = cat_icon(cat)
+                c1, c2, c3 = st.columns([4,2,1])
+                with c1:
+                    st.markdown(f"""
+                    <div style="padding:5px 0">
+                        <div style="font-weight:700;font-size:.8rem">{ico} {cat}</div>
+                        <div style="font-size:.65rem;color:{C['muted']}">
+                            Current: {sym}{current:,.0f} →
+                            <b style="color:{C['text']}">{sym}{suggested:,.0f}</b>
+                            <span style="color:{diff_c};margin-left:4px">{diff_s}</span>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+                with c2:
+                    override = st.number_input("", value=float(round(suggested)),
+                        min_value=0.0, step=500.0, format="%.0f",
+                        key=f"sug_{cat}", label_visibility="collapsed")
+                    new_budgets[cat] = override
+                with c3:
+                    if st.button("✓", key=f"acc_{cat}", help="Accept"):
+                        new_budgets[cat] = round(suggested)
+                        any_accepted = True
+
+            if st.button("✅ Apply All Suggestions", use_container_width=True, type="primary"):
+                ss = get_ss(); ws = ss.worksheet("Budgets")
+                ws.clear(); ws.append_row(["Category","MonthlyBudget"])
+                ws.append_rows([[c,a] for c,a in new_budgets.items() if a > 0])
+                st.cache_data.clear()
+                st.success("✅ Budgets updated!")
+                st.rerun()
+
     # ── EXPORT
     st.markdown('<div class="section-label">Data</div>', unsafe_allow_html=True)
     with st.expander("📤  Export Transactions", expanded=False):
