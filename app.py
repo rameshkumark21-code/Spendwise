@@ -3544,11 +3544,6 @@ def screen_settings():
                 else:
                     st.error("Enter both names.")
 
-FEATURE 3 — Smart Budget Suggestions — screen_settings()
-pythonOLD:
-    # ── EXPORT
-
-NEW:
     # ── SMART BUDGET SUGGESTIONS
     st.markdown('<div class="section-label">Smart Budget Suggestions</div>', unsafe_allow_html=True)
     with st.expander("💡 AI-suggested budgets based on last 3 months", expanded=False):
