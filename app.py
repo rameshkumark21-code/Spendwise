@@ -1771,7 +1771,7 @@ def screen_home():
     expected_spend = budget * (day_of_month / days_in_month)
     velocity_pct = (spent / budget * 100) if budget > 0 else 0
     pace_pct = (spent / expected_spend * 100) if expected_spend > 0 else 0
-    if budget > 0 and spent > 0:
+    if budget > 0:
         if velocity_pct >= 90:
             v_color, v_icon = C["expense"], "🚨"
         elif velocity_pct >= 70:
