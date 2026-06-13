@@ -1755,12 +1755,10 @@ def screen_home():
                         <span style="font-family:'JetBrains Mono',monospace;color:{C['expense']};font-weight:600">{sym}{amt:,.0f}</span>
                         <span style="color:{C['muted']};font-size:.65rem;margin-left:5px">{pct_of_total:.0f}%</span>
                     </span>
-                </div>""", unsafe_allow_html=True)
-            if untagged > 0:
-                st.markdown(f"""
-                <div class="acct-row">
-                    <span style="color:{C['muted']};font-size:.75rem">Untagged</span>
-                    <span style="font-family:'JetBrains Mono',monospace;color:{C['muted']};font-weight:600">{sym}{untagged:,.0f}</span>
+                </div>
+                <div style="font-family:'JetBrains Mono',monospace;color:{ac};
+                     font-size:.82rem;flex-shrink:0;font-weight:600">
+                     {sg}{sym}{abs(amt):,.0f}</div>
                 </div>""", unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
