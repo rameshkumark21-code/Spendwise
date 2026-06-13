@@ -1764,6 +1764,34 @@ def screen_home():
                 </div>""", unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
+
+  # ── SPEND VELOCITY ALERT
+    day_of_month = now.day
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    expected_spend = budget * (day_of_month / days_in_month)
+    velocity_pct = (spent / budget * 100) if budget > 0 else 0
+    pace_pct = (spent / expected_spend * 100) if expected_spend > 0 else 0
+    if budget > 0 and spent > 0:
+        if velocity_pct >= 90:
+            v_color, v_icon = C["expense"], "🚨"
+        elif velocity_pct >= 70:
+            v_color, v_icon = C["warning"], "⚠️"
+        else:
+            v_color, v_icon = C["income"], "✅"
+        st.markdown(f"""
+        <div class="card-sm" style="border-left:3px solid {v_color};margin:6px 0">
+            <div style="font-size:.72rem;font-weight:800;color:{v_color}">{v_icon} Spend Velocity</div>
+            <div style="font-size:.78rem;color:{C['text']};margin-top:3px">
+                You're on day <b>{day_of_month}</b> of {days_in_month} —
+                spent <b style="color:{v_color}">{velocity_pct:.0f}%</b> of budget
+                vs <b>{day_of_month/days_in_month*100:.0f}%</b> of month elapsed.
+            </div>
+            <div style="font-size:.7rem;color:{C['muted']};margin-top:2px">
+                At this pace you'll spend <b style="color:{v_color}">{sym}{spent/day_of_month*days_in_month:,.0f}</b> this month
+                (budget: {sym}{budget:,.0f})
+            </div>
+        </div>""", unsafe_allow_html=True)
+
     # ── INCOME / SAVINGS
     savings = income - spent
     s_rate  = (savings / income * 100) if income > 0 else 0
