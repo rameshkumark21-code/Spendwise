@@ -38,6 +38,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+SPREADSHEET_ID = "11dt8IdIjpiS3UCuAEDmLi9ETm5u4rONZpOlnLBK065w"
 SPREADSHEET_NAME = "ClearSpend"
 
 HEADERS = {
@@ -105,8 +106,22 @@ DEFAULT_EMAIL_RULES = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  GOOGLE SHEETS LAYER
+#  GOOGLE SHEETS LAYER & RETRY SAFETY WRAPPER
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def retry_gspread(func, retries=3, delay=1.5):
+    """Execute gspread functions with exponential backoff to absorb 429/500 APIErrors."""
+    for attempt in range(retries):
+        try:
+            return func()
+        except gspread.exceptions.APIError as e:
+            if attempt == retries - 1:
+                raise e
+            time.sleep(delay * (2 ** attempt))
+        except Exception as e:
+            if attempt == retries - 1:
+                raise e
+            time.sleep(delay)
 
 @st.cache_resource
 def get_client():
@@ -118,37 +133,55 @@ def get_client():
 def get_ss():
     client = get_client()
     try:
-        return client.open(SPREADSHEET_NAME)
-    except gspread.SpreadsheetNotFound:
-        return client.create(SPREADSHEET_NAME)
+        # Fast direct key lookup (uses zero Drive search quota)
+        return client.open_by_key(SPREADSHEET_ID)
+    except Exception:
+        try:
+            return client.open(SPREADSHEET_NAME)
+        except gspread.SpreadsheetNotFound:
+            return client.create(SPREADSHEET_NAME)
 
 def _ensure_columns(ws, required_headers: list):
-    existing = ws.row_values(1)
-    for h in required_headers:
-        if h not in existing:
-            col = len(existing) + 1
-            ws.update_cell(1, col, h)
-            existing.append(h)
+    try:
+        existing = ws.row_values(1)
+        for h in required_headers:
+            if h not in existing:
+                col = len(existing) + 1
+                ws.update_cell(1, col, h)
+                existing.append(h)
+    except Exception: pass
 
 def ensure_sheets():
     ss = get_ss()
-    existing = [ws.title for ws in ss.worksheets()]
+    try:
+        existing = [ws.title for ws in ss.worksheets()]
+    except Exception: existing = []
+    
     for name, hdrs in HEADERS.items():
         if name not in existing:
-            rows = 500 if name in ("EmailRules","ParseErrors") else 2000
-            ws = ss.add_worksheet(title=name, rows=rows, cols=len(hdrs))
-            ws.append_row(hdrs)
+            try:
+                rows = 500 if name in ("EmailRules","ParseErrors") else 2000
+                ws = ss.add_worksheet(title=name, rows=rows, cols=len(hdrs))
+                ws.append_row(hdrs)
+            except Exception: pass
         else:
-            _ensure_columns(ss.worksheet(name), hdrs)
-    cats = ss.worksheet("Categories")
-    if len(cats.get_all_values()) <= 1:
-        cats.append_rows(DEFAULT_CATEGORIES)
-    setts = ss.worksheet("Settings")
-    if len(setts.get_all_values()) <= 1:
-        setts.append_rows(DEFAULT_SETTINGS)
-    email_ws = ss.worksheet("EmailRules")
-    if len(email_ws.get_all_values()) <= 1 and DEFAULT_EMAIL_RULES:
-        email_ws.append_rows(DEFAULT_EMAIL_RULES)
+            try: _ensure_columns(ss.worksheet(name), hdrs)
+            except Exception: pass
+            
+    try:
+        cats = ss.worksheet("Categories")
+        if len(cats.get_all_values()) <= 1: cats.append_rows(DEFAULT_CATEGORIES)
+    except Exception: pass
+
+    try:
+        setts = ss.worksheet("Settings")
+        if len(setts.get_all_values()) <= 1: setts.append_rows(DEFAULT_SETTINGS)
+    except Exception: pass
+
+    try:
+        email_ws = ss.worksheet("EmailRules")
+        if len(email_ws.get_all_values()) <= 1 and DEFAULT_EMAIL_RULES: email_ws.append_rows(DEFAULT_EMAIL_RULES)
+    except Exception: pass
 
 # ── CRUD ───────────────────────────────────────────────────────────────────────
 
@@ -213,170 +246,201 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
         results["nat"].append(rid)
     return results
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=120)
 def _load_transactions():
-    ss   = get_ss()
-    data = ss.worksheet("Transactions").get_all_records()
-    if not data:
+    try:
+        data = retry_gspread(lambda: get_ss().worksheet("Transactions").get_all_records())
+        if not data:
+            return pd.DataFrame(columns=HEADERS["Transactions"])
+        df = pd.DataFrame(data)
+        df["Date"]   = _parse_dates(df["Date"])
+        df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
+        return df
+    except Exception as e:
         return pd.DataFrame(columns=HEADERS["Transactions"])
-    df = pd.DataFrame(data)
-    df["Date"]   = _parse_dates(df["Date"])
-    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
-    return df
 
 @st.cache_data(ttl=60)
 def load_importlog():
     try:
-        data = get_ss().worksheet("ImportLog").get_all_records()
+        data = retry_gspread(lambda: get_ss().worksheet("ImportLog").get_all_records())
         return pd.DataFrame(data) if data else pd.DataFrame()
     except Exception: return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_categories():
-    data = get_ss().worksheet("Categories").get_all_records()
-    return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Categories"])
+    try:
+        data = retry_gspread(lambda: get_ss().worksheet("Categories").get_all_records())
+        return pd.DataFrame(data) if data else pd.DataFrame(DEFAULT_CATEGORIES, columns=HEADERS["Categories"])
+    except Exception:
+        return pd.DataFrame(DEFAULT_CATEGORIES, columns=HEADERS["Categories"])
 
-@st.cache_data(ttl=360)
+@st.cache_data(ttl=180)
 def load_cat_freq():
-    df = _load_transactions()
-    cats_df = load_categories()
-    if df.empty:
-        cats_sorted = sorted(cats_df["Category"].dropna().unique().tolist())
-        sub_map = {cat: cats_df[cats_df["Category"]==cat]["Subcategory"].dropna().tolist() for cat in cats_sorted}
+    try:
+        df = _load_transactions()
+        cats_df = load_categories()
+        if df.empty:
+            cats_sorted = sorted(cats_df["Category"].dropna().unique().tolist())
+            sub_map = {cat: cats_df[cats_df["Category"]==cat]["Subcategory"].dropna().tolist() for cat in cats_sorted}
+            return cats_sorted, sub_map
+        cat_counts = df[df["Category"].notna() & (df["Category"] != "")]["Category"].value_counts()
+        all_cats = set(cats_df["Category"].dropna().unique().tolist())
+        extra_cats = sorted(all_cats - set(cat_counts.index.tolist()))
+        cats_sorted = cat_counts.index.tolist() + extra_cats
+        sub_map = {}
+        for cat in cats_sorted:
+            sub_counts = df[df["Category"] == cat]["Subcategory"].value_counts().index.tolist()
+            subs_from_cats = cats_df[cats_df["Category"]==cat]["Subcategory"].dropna().unique().tolist()
+            sub_map[cat] = sub_counts + [s for s in subs_from_cats if s not in sub_counts]
         return cats_sorted, sub_map
-    cat_counts = df[df["Category"].notna() & (df["Category"] != "")]["Category"].value_counts()
-    all_cats = set(cats_df["Category"].dropna().unique().tolist())
-    extra_cats = sorted(all_cats - set(cat_counts.index.tolist()))
-    cats_sorted = cat_counts.index.tolist() + extra_cats
-    sub_map = {}
-    for cat in cats_sorted:
-        sub_counts = df[df["Category"] == cat]["Subcategory"].value_counts().index.tolist()
-        subs_from_cats = cats_df[cats_df["Category"]==cat]["Subcategory"].dropna().unique().tolist()
-        sub_map[cat] = sub_counts + [s for s in subs_from_cats if s not in sub_counts]
-    return cats_sorted, sub_map
+    except Exception:
+        cats_df = pd.DataFrame(DEFAULT_CATEGORIES, columns=HEADERS["Categories"])
+        cats_sorted = sorted(cats_df["Category"].unique().tolist())
+        sub_map = {cat: cats_df[cats_df["Category"]==cat]["Subcategory"].tolist() for cat in cats_sorted}
+        return cats_sorted, sub_map
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_budgets():
-    data = get_ss().worksheet("Budgets").get_all_records()
-    return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Budgets"])
+    try:
+        data = retry_gspread(lambda: get_ss().worksheet("Budgets").get_all_records())
+        return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["Budgets"])
+    except Exception: return pd.DataFrame(columns=HEADERS["Budgets"])
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_settings():
-    data = get_ss().worksheet("Settings").get_all_records()
-    return {r["Key"]: r["Value"] for r in data} if data else {k: v for k, v in DEFAULT_SETTINGS}
+    try:
+        data = retry_gspread(lambda: get_ss().worksheet("Settings").get_all_records())
+        return {r["Key"]: r["Value"] for r in data} if data else {k: v for k, v in DEFAULT_SETTINGS}
+    except Exception: return {k: v for k, v in DEFAULT_SETTINGS}
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_email_rules():
     try:
-        data = get_ss().worksheet("EmailRules").get_all_records()
+        data = retry_gspread(lambda: get_ss().worksheet("EmailRules").get_all_records())
         return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["EmailRules"])
     except Exception: return pd.DataFrame(columns=HEADERS["EmailRules"])
 
 @st.cache_data(ttl=60)
 def load_parse_errors():
     try:
-        data = get_ss().worksheet("ParseErrors").get_all_records()
+        data = retry_gspread(lambda: get_ss().worksheet("ParseErrors").get_all_records())
         return pd.DataFrame(data) if data else pd.DataFrame(columns=HEADERS["ParseErrors"])
     except Exception: return pd.DataFrame(columns=HEADERS["ParseErrors"])
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_merchant_aliases() -> dict:
     try:
-        data = get_ss().worksheet("MerchantAliases").get_all_records()
+        data = retry_gspread(lambda: get_ss().worksheet("MerchantAliases").get_all_records())
         return {str(r["RawName"]).lower().strip(): str(r["CanonicalName"]).strip() for r in data if r.get("RawName")}
     except Exception: return {}
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_telegram_settings() -> dict:
     try:
-        data = get_ss().worksheet("TelegramSettings").get_all_records()
+        data = retry_gspread(lambda: get_ss().worksheet("TelegramSettings").get_all_records())
         return {r["Key"]: r["Value"] for r in data if r.get("Key")}
     except Exception: return {}
 
 def trigger_run_now():
-    ws = get_ss().worksheet("Settings")
-    all_v = ws.get_all_values()
-    for i, row in enumerate(all_v[1:], start=2):
-        if row and row[0] == "trigger_queue":
-            ws.update_cell(i, 2, "RUN"); st.cache_data.clear(); return
-    ws.append_row(["trigger_queue", "RUN"]); st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("Settings")
+        all_v = ws.get_all_values()
+        for i, row in enumerate(all_v[1:], start=2):
+            if row and row[0] == "trigger_queue":
+                ws.update_cell(i, 2, "RUN"); st.cache_data.clear(); return
+        ws.append_row(["trigger_queue", "RUN"]); st.cache_data.clear()
+    except Exception as e: st.error(f"Trigger failed: {e}")
 
 def _write_txn(row_dict):
-    ws = get_ss().worksheet("Transactions")
-    ws.append_row([row_dict.get(h, "") for h in HEADERS["Transactions"]], value_input_option="USER_ENTERED")
-    st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("Transactions")
+        ws.append_row([row_dict.get(h, "") for h in HEADERS["Transactions"]], value_input_option="USER_ENTERED")
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Failed to write transaction: {e}")
 
 def _bulk_write_txns(rows):
-    get_ss().worksheet("Transactions").append_rows(rows, value_input_option="USER_ENTERED")
-    st.cache_data.clear()
+    try:
+        get_ss().worksheet("Transactions").append_rows(rows, value_input_option="USER_ENTERED")
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Bulk write failed: {e}")
 
 def _update_txn(row_id, upd):
-    ws = get_ss().worksheet("Transactions")
-    all_vals = ws.get_all_values()
-    hdrs = all_vals[0]
-    for i, row in enumerate(all_vals[1:], start=2):
-        if row[0] == row_id:
-            new_row = [upd.get(h, row[j]) for j, h in enumerate(hdrs)]
-            ws.update(f"A{i}:{chr(64+len(hdrs))}{i}", [new_row])
-            break
-    time.sleep(0.5); st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("Transactions")
+        all_vals = ws.get_all_values()
+        hdrs = all_vals[0]
+        for i, row in enumerate(all_vals[1:], start=2):
+            if row[0] == row_id:
+                new_row = [upd.get(h, row[j]) for j, h in enumerate(hdrs)]
+                ws.update(f"A{i}:{chr(64+len(hdrs))}{i}", [new_row])
+                break
+        time.sleep(0.5); st.cache_data.clear()
+    except Exception as e: st.error(f"Update failed: {e}")
 
 def _delete_txn(row_id):
-    ws = get_ss().worksheet("Transactions")
-    all_vals = ws.get_all_values()
-    for i, row in enumerate(all_vals[1:], start=2):
-        if row[0] == row_id:
-            ws.delete_rows(i); break
-    st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("Transactions")
+        all_vals = ws.get_all_values()
+        for i, row in enumerate(all_vals[1:], start=2):
+            if row[0] == row_id:
+                ws.delete_rows(i); break
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Delete failed: {e}")
 
 def _bulk_update_merchant_cat(row_ids: list, new_cat: str, new_sub: str):
     if not row_ids: return 0
-    ws = get_ss().worksheet("Transactions")
-    all_vals = ws.get_all_values()
-    hdrs = all_vals[0]
     try:
+        ws = get_ss().worksheet("Transactions")
+        all_vals = ws.get_all_values()
+        hdrs = all_vals[0]
         cat_col, sub_col = hdrs.index("Category") + 1, hdrs.index("Subcategory") + 1
         id_col, ac_col = hdrs.index("RowID") + 1, hdrs.index("AutoCat") + 1
-    except ValueError: return 0
-    id_set, updated = set(row_ids), 0
-    from gspread.utils import rowcol_to_a1
-    updates = []
-    for i, row in enumerate(all_vals[1:], start=2):
-        if row[id_col - 1] in id_set:
-            updates.append({"range": rowcol_to_a1(i, cat_col), "values": [[new_cat]]})
-            updates.append({"range": rowcol_to_a1(i, sub_col), "values": [[new_sub]]})
-            updates.append({"range": rowcol_to_a1(i, ac_col), "values": [["no"]]})
-            updated += 1
-    if updates: ws.batch_update(updates)
-    st.cache_data.clear(); return updated
+        id_set, updated = set(row_ids), 0
+        from gspread.utils import rowcol_to_a1
+        updates = []
+        for i, row in enumerate(all_vals[1:], start=2):
+            if row[id_col - 1] in id_set:
+                updates.append({"range": rowcol_to_a1(i, cat_col), "values": [[new_cat]]})
+                updates.append({"range": rowcol_to_a1(i, sub_col), "values": [[new_sub]]})
+                updates.append({"range": rowcol_to_a1(i, ac_col), "values": [["no"]]})
+                updated += 1
+        if updates: ws.batch_update(updates)
+        st.cache_data.clear(); return updated
+    except Exception as e: st.error(f"Bulk update failed: {e}"); return 0
 
 def save_merchant_alias(raw: str, canonical: str):
-    ws = get_ss().worksheet("MerchantAliases")
-    all_v = ws.get_all_values()
-    for i, row in enumerate(all_v[1:], start=2):
-        if row and str(row[0]).lower().strip() == raw.lower().strip():
-            ws.update_cell(i, 2, canonical)
-            ws.update_cell(i, 3, date.today().isoformat())
-            st.cache_data.clear(); return
-    ws.append_row([raw.strip(), canonical.strip(), date.today().isoformat()])
-    st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("MerchantAliases")
+        all_v = ws.get_all_values()
+        for i, row in enumerate(all_v[1:], start=2):
+            if row and str(row[0]).lower().strip() == raw.lower().strip():
+                ws.update_cell(i, 2, canonical)
+                ws.update_cell(i, 3, date.today().isoformat())
+                st.cache_data.clear(); return
+        ws.append_row([raw.strip(), canonical.strip(), date.today().isoformat()])
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Alias save failed: {e}")
 
 def delete_merchant_alias(raw: str):
-    ws = get_ss().worksheet("MerchantAliases")
-    all_v = ws.get_all_values()
-    for i, row in enumerate(all_v[1:], start=2):
-        if row and str(row[0]).lower().strip() == raw.lower().strip():
-            ws.delete_rows(i); st.cache_data.clear(); return
+    try:
+        ws = get_ss().worksheet("MerchantAliases")
+        all_v = ws.get_all_values()
+        for i, row in enumerate(all_v[1:], start=2):
+            if row and str(row[0]).lower().strip() == raw.lower().strip():
+                ws.delete_rows(i); st.cache_data.clear(); return
+    except Exception as e: st.error(f"Alias delete failed: {e}")
 
 def save_telegram_setting(key: str, value: str):
-    ws = get_ss().worksheet("TelegramSettings")
-    all_v = ws.get_all_values()
-    for i, row in enumerate(all_v[1:], start=2):
-        if row and row[0] == key:
-            ws.update_cell(i, 2, value)
-            st.cache_data.clear(); return
-    ws.append_row([key, value])
-    st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("TelegramSettings")
+        all_v = ws.get_all_values()
+        for i, row in enumerate(all_v[1:], start=2):
+            if row and row[0] == key:
+                ws.update_cell(i, 2, value)
+                st.cache_data.clear(); return
+        ws.append_row([key, value])
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Telegram setting failed: {e}")
 
 def send_telegram(bot_token: str, chat_id: str, message: str) -> tuple[bool, str]:
     import urllib.request as _ur, urllib.parse as _up
@@ -416,25 +480,31 @@ def check_and_send_budget_alerts(df: pd.DataFrame, budgets: pd.DataFrame, settin
         if ok: save_telegram_setting(alert_key, "sent")
 
 def _write_email_rule(rule_dict):
-    get_ss().worksheet("EmailRules").append_row([rule_dict.get(h, "") for h in HEADERS["EmailRules"]])
-    st.cache_data.clear()
+    try:
+        get_ss().worksheet("EmailRules").append_row([rule_dict.get(h, "") for h in HEADERS["EmailRules"]])
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Rule write failed: {e}")
 
 def _delete_email_rule(rule_name):
-    ws = get_ss().worksheet("EmailRules")
-    all_vals = ws.get_all_values()
-    for i, row in enumerate(all_vals[1:], start=2):
-        if row and row[0] == rule_name: ws.delete_rows(i); break
-    st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("EmailRules")
+        all_vals = ws.get_all_values()
+        for i, row in enumerate(all_vals[1:], start=2):
+            if row and row[0] == rule_name: ws.delete_rows(i); break
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Rule delete failed: {e}")
 
 def _update_email_rule(rule_name, upd):
-    ws = get_ss().worksheet("EmailRules")
-    all_vals = ws.get_all_values()
-    hdrs = all_vals[0]
-    for i, row in enumerate(all_vals[1:], start=2):
-        if row and row[0] == rule_name:
-            new_row = [upd.get(h, row[j]) for j, h in enumerate(hdrs)]
-            ws.update(f"A{i}:{chr(64+len(hdrs))}{i}", [new_row]); break
-    st.cache_data.clear()
+    try:
+        ws = get_ss().worksheet("EmailRules")
+        all_vals = ws.get_all_values()
+        hdrs = all_vals[0]
+        for i, row in enumerate(all_vals[1:], start=2):
+            if row and row[0] == rule_name:
+                new_row = [upd.get(h, row[j]) for j, h in enumerate(hdrs)]
+                ws.update(f"A{i}:{chr(64+len(hdrs))}{i}", [new_row]); break
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Rule update failed: {e}")
 
 # ── DOMAIN HELPERS ────────────────────────────────────────────────────────────
 
@@ -733,7 +803,6 @@ def dlg_review_misc():
         if st.button("✕ Close", use_container_width=True):
             st.session_state.review_misc_page = False; st.rerun()
 
-    # Per-merchant breakdown
     st.write("---")
     st.caption("OR Recategorize By Merchant Group:")
     merch_groups = misc.groupby("Merchant").agg(count=("RowID","count"), total=("Amount", lambda x: x.abs().sum()), ids=("RowID", list)).reset_index().sort_values("total", ascending=False)
