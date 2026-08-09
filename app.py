@@ -318,7 +318,7 @@ def load_merchant_aliases() -> dict:
 def load_telegram_settings() -> dict:
     try:
         data = retry_gspread(lambda: get_ss().worksheet("TelegramSettings").get_all_records())
-        return {r["Key"]: r["Value"] for r in data if r.get("Key")}
+        return {r["Key"]: r["Value"] for r in data} if data else {}
     except Exception: return {}
 
 def trigger_run_now():
@@ -387,6 +387,50 @@ def _bulk_update_merchant_cat(row_ids: list, new_cat: str, new_sub: str):
         if updates: ws.batch_update(updates)
         st.cache_data.clear(); return updated
     except Exception as e: st.error(f"Bulk update failed: {e}"); return 0
+
+def _move_subcategory(subcat: str, target_cat: str, retrospective: bool) -> tuple[str, int]:
+    ss = get_ss()
+    old_cat = None
+    try:
+        ws_cat = ss.worksheet("Categories")
+        all_cats = ws_cat.get_all_values()
+        hdrs_c = all_cats[0]
+        c_idx = hdrs_c.index("Category")
+        s_idx = hdrs_c.index("Subcategory")
+        
+        for i, row in enumerate(all_cats[1:], start=2):
+            if len(row) > s_idx and row[s_idx].strip().lower() == subcat.strip().lower():
+                old_cat = row[c_idx]
+                ws_cat.update_cell(i, c_idx + 1, target_cat)
+                break
+    except Exception as e:
+        st.error(f"Failed to update Category mapping: {e}")
+        return "", 0
+
+    txns_updated = 0
+    if retrospective:
+        try:
+            ws_txn = ss.worksheet("Transactions")
+            all_txns = ws_txn.get_all_values()
+            hdrs_t = all_txns[0]
+            cat_col = hdrs_t.index("Category") + 1
+            sub_col = hdrs_t.index("Subcategory") + 1
+            ac_col  = hdrs_t.index("AutoCat") + 1
+            
+            from gspread.utils import rowcol_to_a1
+            updates = []
+            for i, row in enumerate(all_txns[1:], start=2):
+                if len(row) >= sub_col and row[sub_col - 1].strip().lower() == subcat.strip().lower():
+                    updates.append({"range": rowcol_to_a1(i, cat_col), "values": [[target_cat]]})
+                    updates.append({"range": rowcol_to_a1(i, ac_col), "values": [["no"]]})
+                    txns_updated += 1
+            if updates:
+                ws_txn.batch_update(updates)
+        except Exception as e:
+            st.error(f"Retrospective update failed: {e}")
+
+    st.cache_data.clear()
+    return old_cat or "", txns_updated
 
 def save_merchant_alias(raw: str, canonical: str):
     try:
@@ -927,7 +971,14 @@ def render_top_bar():
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     
-    NAV_ITEMS = [("home", "🏠 Summary"), ("transactions", "📋 Spends"), ("add", "➕ Add & Import"), ("analytics", "📊 Insights"), ("settings", "⚙️ Settings")]
+    NAV_ITEMS = [
+        ("home", "🏠 Summary"), 
+        ("transactions", "📋 Spends"), 
+        ("add", "➕ Add & Import"), 
+        ("categories", "🏷️ Category Manager"), 
+        ("analytics", "📊 Insights"), 
+        ("settings", "⚙️ Settings")
+    ]
     cols = st.columns(len(NAV_ITEMS))
     for i, (key, label) in enumerate(NAV_ITEMS):
         with cols[i]:
@@ -1022,7 +1073,7 @@ def screen_home():
         start_idx = (page - 1) * n_rows
         recent_df = all_sorted.iloc[start_idx : start_idx + n_rows]
 
-        # Mobile-Native Card Rows
+        # Mobile-Native Card Rows with Notes Display
         for idx, row in recent_df.iterrows():
             rid = str(row.get("RowID", idx))
             c_ed, c_card = st.columns([0.15, 0.85])
@@ -1080,7 +1131,7 @@ def screen_transactions():
     with c2: sel_acct = st.selectbox("💳 Account:", ["All"] + extract_accounts(df), key="spends_a_dd")
     with c3: sel_pm   = st.selectbox("↕️ Method:", ["All"] + PAYMENT_METHODS, key="spends_pm_dd")
     
-    # Dynamic Subcategory Filter
+    # Subcategory Filter Dropdown
     avail_subs = sub_map.get(st.session_state.filter_cat, []) if st.session_state.filter_cat != "All" else []
     with c4: sel_subcat = st.selectbox("📂 Subcategory:", ["All"] + avail_subs, key="spends_subcat_dd")
 
@@ -1127,7 +1178,7 @@ def screen_transactions():
         start_idx = (page - 1) * n_rows
         spends_df = all_sorted.iloc[start_idx : start_idx + n_rows]
 
-        # Mobile-Native Card Rows
+        # Mobile-Native Card Rows with Notes Display
         for idx, row in spends_df.iterrows():
             rid = str(row.get("RowID", idx))
             c_ed, c_card = st.columns([0.15, 0.85])
@@ -1311,7 +1362,76 @@ def screen_add():
                 st.session_state.preview_rows = None; st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  REIMAGINED INSIGHTS PAGE: 12-MONTH SUMMARY (STARTING POINT) + DRILL DOWN
+#  SCREEN 4 — CATEGORY MANAGER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def screen_categories():
+    cats_df = load_categories()
+    cats_sorted, sub_map = load_cat_freq()
+
+    st.markdown('<div class="card-title">🏷️ Category & Subcategory Manager</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card-panel" style="border-left: 4px solid var(--primary);">', unsafe_allow_html=True)
+    st.markdown('### 🔄 Move Subcategory to Another Category')
+    
+    all_subs_flat = []
+    sub_parent_map = {}
+    for _, row in cats_df.iterrows():
+        sub = str(row.get("Subcategory","")).strip()
+        cat = str(row.get("Category","")).strip()
+        if sub and sub not in all_subs_flat:
+            all_subs_flat.append(sub)
+            sub_parent_map[sub] = cat
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_sub_to_move = st.selectbox("Select Subcategory to Move:", all_subs_flat if all_subs_flat else ["Groceries"])
+        cur_parent = sub_parent_map.get(sel_sub_to_move, "Others")
+        st.info(f"Current Parent Category: **{cur_parent}**")
+    
+    with c2:
+        target_cat_opts = [c for c in cats_sorted if c != cur_parent]
+        target_cat = st.selectbox("Select Target Parent Category:", target_cat_opts if target_cat_opts else cats_sorted)
+
+    retrospective = st.checkbox("☑️ **Retrospectively update all existing past transactions** for this subcategory in Google Sheets", value=True)
+
+    if st.button("💾 Move Subcategory & Update Sheet", type="primary", use_container_width=True):
+        if sel_sub_to_move and target_cat:
+            old_cat, updated_count = _move_subcategory(sel_sub_to_move, target_cat, retrospective)
+            if retrospective:
+                st.success(f"✅ Moved subcategory **{sel_sub_to_move}** from `{old_cat}` to `{target_cat}`! Updated **{updated_count}** historical transactions.")
+            else:
+                st.success(f"✅ Moved subcategory **{sel_sub_to_move}** to `{target_cat}` for future imports.")
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+    st.markdown('### ➕ Add New Category or Subcategory')
+    with st.form("add_cat_mgr_form", clear_on_submit=True):
+        a1, a2 = st.columns(2)
+        with a1:
+            nc = st.text_input("Category Name", placeholder="e.g. Pet Care")
+            nk = st.text_input("Auto-Categorization Keywords (Comma separated)", placeholder="e.g. vet, clinic, dog food")
+        with a2:
+            ns = st.text_input("Subcategory Name", placeholder="e.g. Vet & Food")
+            ni = st.text_input("Emoji Icon", value="📌")
+        
+        if st.form_submit_button("➕ Create Category Mapping", use_container_width=True, type="primary"):
+            if nc.strip() and ns.strip():
+                get_ss().worksheet("Categories").append_row([nc.strip(), ns.strip(), nk.strip(), ni.strip()])
+                st.cache_data.clear()
+                st.success(f"✅ Created {ni} {nc} › {ns}")
+                st.rerun()
+            else:
+                st.error("Enter both Category and Subcategory names.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    with st.expander("📂 Existing Category Mappings & Keyword Rules", expanded=True):
+        if not cats_df.empty:
+            st.dataframe(cats_df[["Category", "Subcategory", "Keywords", "Icon"]], use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  REIMAGINED SCREEN 5 — INSIGHTS & ANALYTICS (12M STARTING POINT)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_analytics():
@@ -1322,9 +1442,7 @@ def screen_analytics():
     if df.empty:
         st.info("No transaction data available."); return
 
-    # ═══════════════════════════════════════════════════════════════════════════
     # 1. STARTING POINT: 12-MONTH HISTORICAL MONTHLY SUMMARY
-    # ═══════════════════════════════════════════════════════════════════════════
     st.markdown('<div class="card-title">🚀 Starting Point: Last 12 Months Historical Summary</div>', unsafe_allow_html=True)
     
     all_exp = df[df["Amount"] < 0].copy()
@@ -1332,7 +1450,6 @@ def screen_analytics():
         all_exp["Abs"] = all_exp["Amount"].abs()
         all_exp["YearMonth"] = all_exp["Date"].dt.to_period("M")
         
-        # Build 12-month period range ending at current month
         now_dt = datetime.today()
         last_12_periods = pd.period_range(end=pd.Period(now_dt, freq="M"), periods=12, freq="M")
         
@@ -1343,21 +1460,18 @@ def screen_analytics():
         tot_12m = m_summary["Spend"].sum()
         avg_12m = m_summary["Spend"].mean()
         
-        # Peak & Lowest Month
         peak_idx = m_summary["Spend"].idxmax()
         peak_row = m_summary.loc[peak_idx] if not m_summary.empty else None
         
         non_zero_m = m_summary[m_summary["Spend"] > 0]
         low_row = non_zero_m.loc[non_zero_m["Spend"].idxmin()] if not non_zero_m.empty else None
 
-        # 12M Summary KPI Cards
         h1, h2, h3, h4 = st.columns(4)
         with h1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Cumulative Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{tot_12m:,.0f}</div><div class="kpi-sub">Total expenses (12 Months)</div></div>', unsafe_allow_html=True)
         with h2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Monthly Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{avg_12m:,.0f}</div><div class="kpi-sub">Avg spend / month</div></div>', unsafe_allow_html=True)
         with h3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Peak Spend Month</div><div class="kpi-value" style="color:{C["warning"]}">{sym}{(peak_row["Spend"] if peak_row is not None else 0):,.0f}</div><div class="kpi-sub">{peak_row["MonthStr"] if peak_row is not None else "—"}</div></div>', unsafe_allow_html=True)
         with h4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Lowest Spend Month</div><div class="kpi-value" style="color:{C["income"]}">{sym}{(low_row["Spend"] if low_row is not None else 0):,.0f}</div><div class="kpi-sub">{low_row["MonthStr"] if low_row is not None else "—"}</div></div>', unsafe_allow_html=True)
 
-        # 12M Plotly Monthly Trend Bar Chart
         fig_12m = go.Figure()
         fig_12m.add_trace(go.Bar(
             x=m_summary["MonthStr"], y=m_summary["Spend"],
@@ -1377,9 +1491,7 @@ def screen_analytics():
 
     st.markdown("<hr style='margin:20px 0;'>", unsafe_allow_html=True)
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # 2. SECONDARY SECTION: SINGLE PERIOD DRILL-DOWN & MoM ANALYSIS
-    # ═══════════════════════════════════════════════════════════════════════════
+    # 2. SECONDARY SECTION: SINGLE PERIOD DRILL-DOWN
     st.markdown('<div class="card-title">🔎 Single Period Drill-Down & MoM Analysis</div>', unsafe_allow_html=True)
     
     months_opts = get_descending_months(df)
@@ -1394,7 +1506,6 @@ def screen_analytics():
 
     cur_tot = abs(exp_df["Amount"].sum()) if not exp_df.empty else 0
 
-    # Previous Month Calculation
     prev_dt = sel_dt - timedelta(days=15)
     pms, pme = month_range(prev_dt.year, prev_dt.month)
     prev_df = filter_by_account(df[(df["Date"].dt.date >= pms) & (df["Date"].dt.date <= pme) & (df["Amount"] < 0)], sel_acct)
@@ -1405,7 +1516,6 @@ def screen_analytics():
     days_in_m = calendar.monthrange(sel_dt.year, sel_dt.month)[1]
     daily_avg = cur_tot / days_in_m if days_in_m > 0 else 0
 
-    # MoM KPI Cards
     i1, i2, i3, i4 = st.columns(4)
     with i1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">{sel_month} Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{cur_tot:,.0f}</div><div class="kpi-sub">Selected Period</div></div>', unsafe_allow_html=True)
     with i2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Previous Period Spend</div><div class="kpi-value" style="color:{C["muted"]}">{sym}{prev_tot:,.0f}</div><div class="kpi-sub">{prev_dt.strftime("%B %Y")}</div></div>', unsafe_allow_html=True)
@@ -1416,7 +1526,7 @@ def screen_analytics():
     with i4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Daily Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{daily_avg:,.0f}</div><div class="kpi-sub">Avg / day ({days_in_m} days)</div></div>', unsafe_allow_html=True)
 
     # Daily Expense Trend Chart for Selected Month
-    st.markdown('<div class="card-title" style="margin-top:16px;">📅 Daily Expense Trend ({sel_month})</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="card-title" style="margin-top:16px;">📅 Daily Expense Trend ({sel_month})</div>', unsafe_allow_html=True)
     if not exp_df.empty:
         exp_df["Abs"] = exp_df["Amount"].abs()
         exp_df["Day"] = exp_df["Date"].dt.day
@@ -1429,14 +1539,11 @@ def screen_analytics():
         fig_daily.update_layout(height=200, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], xaxis=dict(title="Day of Month", dtick=2), yaxis=dict(tickprefix=sym), showlegend=False)
         st.plotly_chart(fig_daily, use_container_width=True, config={"displayModeBar": False})
 
-    # ═══════════════════════════════════════════════════════════════════════════
     # 3. RANKED SPEND BREAKDOWNS (DESCENDING ORDER)
-    # ═══════════════════════════════════════════════════════════════════════════
     st.markdown('<div class="card-title" style="margin-top:16px;">📊 Ranked Spend Breakdowns (Descending)</div>', unsafe_allow_html=True)
     b1, b2, b3 = st.columns(3)
 
     if not exp_df.empty:
-        # Category Breakdown (Descending)
         with b1:
             st.markdown('<div class="card-panel">', unsafe_allow_html=True)
             st.markdown('**Category Breakdown (Descending)**')
@@ -1448,7 +1555,6 @@ def screen_analytics():
                 st.progress(pct / 100)
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Subcategory Breakdown (Descending)
         with b2:
             st.markdown('<div class="card-panel">', unsafe_allow_html=True)
             st.markdown('**Subcategory Breakdown (Descending)**')
@@ -1460,7 +1566,6 @@ def screen_analytics():
                 st.progress(pct / 100)
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Account Breakdown (Descending)
         with b3:
             st.markdown('<div class="card-panel">', unsafe_allow_html=True)
             st.markdown('**Account Breakdown (Descending)**')
@@ -1481,7 +1586,7 @@ def screen_analytics():
     except: pass
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SCREEN 5 — SETTINGS & FULL TOOLS SUITE
+#  SCREEN 6 — SETTINGS & FULL TOOLS SUITE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_settings():
@@ -1544,8 +1649,7 @@ def screen_settings():
             for _, rule in rules_df.iterrows():
                 r_nm = str(rule.get("RuleName",""))
                 is_active = str(rule.get("Active","TRUE")).upper() in ("TRUE","YES","1")
-                is_dry = str(rule.get("DryRun","FALSE")).upper() in ("TRUE","YES","1")
-                st.write(f"**{r_nm}** ({'Active' if is_active else 'Off'}) - `{'Dry Run' if is_dry else 'Live'}`")
+                st.write(f"**{r_nm}** ({'Active' if is_active else 'Off'})")
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button(f"Toggle Active: {r_nm}", key=f"tg_act_{r_nm}"):
@@ -1598,6 +1702,7 @@ def main():
     if nav == "home": screen_home()
     elif nav == "transactions": screen_transactions()
     elif nav == "add": screen_add()
+    elif nav == "categories": screen_categories()
     elif nav == "analytics": screen_analytics()
     elif nav == "settings": screen_settings()
 
@@ -1607,9 +1712,7 @@ def main():
         st.session_state.show_quick_add = True
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if st.session_state.get("show_quick_add"):
-        dlg_quick_add()
-
+    if st.session_state.get("show_quick_add"): dlg_quick_add()
     if st.session_state.get("edit_txn"): dlg_edit(st.session_state.edit_txn)
     if st.session_state.get("pending_bulk"): dlg_bulk_suggest()
     if st.session_state.get("review_misc_page") and st.session_state.nav == "transactions": dlg_review_misc()
