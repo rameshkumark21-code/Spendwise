@@ -6,7 +6,6 @@ from datetime import datetime, date, timedelta
 import json, uuid, re, calendar, time
 import plotly.express as px
 import plotly.graph_objects as go
-from io import BytesIO
 
 # ── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -96,7 +95,7 @@ DEFAULT_CATEGORIES = [
 DEFAULT_SETTINGS = [
     ["currency_symbol", "₹"],
     ["currency_code",   "INR"],
-    ["monthly_budget",  "50000"],
+    ["monthly_budget",  "30000"],
     ["app_name",        "ClearSpend"],
 ]
 
@@ -110,17 +109,13 @@ DEFAULT_EMAIL_RULES = [
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def retry_gspread(func, retries=3, delay=1.5):
-    """Execute gspread functions with exponential backoff to absorb 429/500 APIErrors."""
     for attempt in range(retries):
-        try:
-            return func()
+        try: return func()
         except gspread.exceptions.APIError as e:
-            if attempt == retries - 1:
-                raise e
+            if attempt == retries - 1: raise e
             time.sleep(delay * (2 ** attempt))
         except Exception as e:
-            if attempt == retries - 1:
-                raise e
+            if attempt == retries - 1: raise e
             time.sleep(delay)
 
 @st.cache_resource
@@ -132,14 +127,10 @@ def get_client():
 @st.cache_resource
 def get_ss():
     client = get_client()
-    try:
-        # Fast direct key lookup (uses zero Drive search quota)
-        return client.open_by_key(SPREADSHEET_ID)
+    try: return client.open_by_key(SPREADSHEET_ID)
     except Exception:
-        try:
-            return client.open(SPREADSHEET_NAME)
-        except gspread.SpreadsheetNotFound:
-            return client.create(SPREADSHEET_NAME)
+        try: return client.open(SPREADSHEET_NAME)
+        except gspread.SpreadsheetNotFound: return client.create(SPREADSHEET_NAME)
 
 def _ensure_columns(ws, required_headers: list):
     try:
@@ -153,8 +144,7 @@ def _ensure_columns(ws, required_headers: list):
 
 def ensure_sheets():
     ss = get_ss()
-    try:
-        existing = [ws.title for ws in ss.worksheets()]
+    try: existing = [ws.title for ws in ss.worksheets()]
     except Exception: existing = []
     
     for name, hdrs in HEADERS.items():
@@ -192,8 +182,7 @@ def _parse_dates(series):
 
     def parse_one(v):
         s = str(v).strip()
-        if not s or s in ("nan","None","NaT",""):
-            return pd.NaT
+        if not s or s in ("nan","None","NaT",""): return pd.NaT
         m = DMY.match(s)
         if m:
             try: return pd.Timestamp(int(m.group(3)), int(m.group(2)), int(m.group(1)))
@@ -217,13 +206,9 @@ def _normalise_date_str(s):
     if not s2: return ""
     if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', s2): return s2
     if re.match(r'^\d{4}-\d{2}-\d{2}$', s2):
-        try:
-            dt = pd.to_datetime(s2)
-            return dt.strftime("%d/%m/%Y")
+        try: return pd.to_datetime(s2).strftime("%d/%m/%Y")
         except: return s2
-    try:
-        dt = pd.to_datetime(s2, dayfirst=True, errors="raise")
-        return dt.strftime("%d/%m/%Y")
+    try: return pd.to_datetime(s2, dayfirst=True, errors="raise").strftime("%d/%m/%Y")
     except: return ""
 
 def _detect_date_issues(df: pd.DataFrame) -> dict:
@@ -231,10 +216,8 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
     for _, row in df.iterrows():
         rid  = str(row.get("RowID",""))
         dval = str(row.get("Date","")).strip()
-        if not dval or dval in ("nan","None","NaT",""):
-            results["nat"].append(rid); continue
-        if re.match(r'^\d{4}-\d{2}-\d{2}', dval):
-            results["iso"].append(rid); continue
+        if not dval or dval in ("nan","None","NaT",""): results["nat"].append(rid); continue
+        if re.match(r'^\d{4}-\d{2}-\d{2}', dval): results["iso"].append(rid); continue
         m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', dval)
         if m: results["short_year"].append(rid); continue
         m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', dval)
@@ -250,14 +233,12 @@ def _detect_date_issues(df: pd.DataFrame) -> dict:
 def _load_transactions():
     try:
         data = retry_gspread(lambda: get_ss().worksheet("Transactions").get_all_records())
-        if not data:
-            return pd.DataFrame(columns=HEADERS["Transactions"])
+        if not data: return pd.DataFrame(columns=HEADERS["Transactions"])
         df = pd.DataFrame(data)
         df["Date"]   = _parse_dates(df["Date"])
         df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
         return df
-    except Exception as e:
-        return pd.DataFrame(columns=HEADERS["Transactions"])
+    except Exception: return pd.DataFrame(columns=HEADERS["Transactions"])
 
 @st.cache_data(ttl=60)
 def load_importlog():
@@ -271,8 +252,7 @@ def load_categories():
     try:
         data = retry_gspread(lambda: get_ss().worksheet("Categories").get_all_records())
         return pd.DataFrame(data) if data else pd.DataFrame(DEFAULT_CATEGORIES, columns=HEADERS["Categories"])
-    except Exception:
-        return pd.DataFrame(DEFAULT_CATEGORIES, columns=HEADERS["Categories"])
+    except Exception: return pd.DataFrame(DEFAULT_CATEGORIES, columns=HEADERS["Categories"])
 
 @st.cache_data(ttl=180)
 def load_cat_freq():
@@ -645,6 +625,32 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
     font-size: 0.82rem; flex-wrap: wrap; gap: 8px;
 }}
 
+/* Mobile Native Card Components */
+.mobile-card-row {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: {C["surface"]};
+    border: 1px solid {C["border"]};
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}}
+.txn-notes-tag {{
+    font-size: 0.7rem;
+    color: {C["muted"]};
+    font-style: italic;
+    margin-top: 2px;
+}}
+
+/* Floating Action Button (FAB) */
+.fab-button-fixed {{
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 999999;
+}}
+
 /* Buttons & Inputs */
 [data-testid="stFormSubmitButton"] > button,
 [data-testid="stButton"] > button[kind="primary"] {{
@@ -675,6 +681,7 @@ def init_state():
         "view_mode":        "desktop",
         "edit_txn":         None,
         "filter_cat":       "All",
+        "filter_subcat":    "All",
         "acct_filter":      "All",
         "search":           "",
         "preview_rows":     None,
@@ -694,6 +701,53 @@ def init_state():
         if k not in st.session_state:
             st.session_state[k] = v
 
+@st.dialog("➕ Quick Add Expense", width="small")
+def dlg_quick_add():
+    df_all = _load_transactions()
+    settings = load_settings()
+    sym = settings.get("currency_symbol","₹")
+    cats_sorted, sub_map = load_cat_freq()
+
+    st.caption("One-Tap Presets:")
+    p1, p2, p3, p4 = st.columns(4)
+    with p1:
+        if st.button("☕ Coffee ₹150", key="qa_p1", use_container_width=True):
+            _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Coffee Shop", "Amount": -150, "Type": "Expense", "Category": "Food & Dining", "Subcategory": "Snacks & Sweets", "Tags": "Paytm UPI", "Source": "preset"})
+            st.toast("✅ Added Coffee ₹150", icon="✅"); st.rerun()
+    with p2:
+        if st.button("⛽ Fuel ₹1k", key="qa_p2", use_container_width=True):
+            _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Fuel Station", "Amount": -1000, "Type": "Expense", "Category": "Transport", "Subcategory": "Fuel", "Tags": "HDFC CC 7500", "Source": "preset"})
+            st.toast("✅ Added Fuel ₹1,000", icon="✅"); st.rerun()
+    with p3:
+        if st.button("🍔 Swiggy ₹400", key="qa_p3", use_container_width=True):
+            _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Swiggy", "Amount": -400, "Type": "Expense", "Category": "Food & Dining", "Subcategory": "Restaurants & Mess", "Tags": "Paytm UPI", "Source": "preset"})
+            st.toast("✅ Added Swiggy ₹400", icon="✅"); st.rerun()
+    with p4:
+        if st.button("🛒 Blinkit ₹600", key="qa_p4", use_container_width=True):
+            _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Blinkit", "Amount": -600, "Type": "Expense", "Category": "Food & Dining", "Subcategory": "Groceries", "Tags": "HDFC CC 7500", "Source": "preset"})
+            st.toast("✅ Added Blinkit ₹600", icon="✅"); st.rerun()
+
+    st.write("---")
+    with st.form("quick_add_f", clear_on_submit=True):
+        amount = st.number_input(f"Amount ({sym})", min_value=0.0, step=1.0, format="%.0f")
+        merch  = st.text_input("Merchant", placeholder="e.g. Marudhar Mart, Swiggy...")
+        sel_cat = st.selectbox("Category", cats_sorted)
+        subs = sub_map.get(sel_cat, [])
+        sel_sub = st.selectbox("Subcategory", subs if subs else ["Miscellaneous"])
+        existing_accounts = extract_accounts(df_all)
+        sel_acct = st.selectbox("Account Tag", existing_accounts if existing_accounts else ["HDFC CC 7500"])
+        notes = st.text_input("Notes (Optional)")
+
+        if st.form_submit_button("💾 Save Expense", use_container_width=True, type="primary"):
+            if amount > 0 and merch.strip():
+                _write_txn({
+                    "RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"),
+                    "Merchant": merch.strip().title(), "Amount": -abs(amount), "Type": "Expense",
+                    "Category": sel_cat, "Subcategory": sel_sub, "PaymentMethod": "UPI",
+                    "Tags": sel_acct, "Notes": notes, "Source": "quick_add", "AutoCat": "no"
+                })
+                st.toast(f"✅ Added {merch} ({sym}{amount:,.0f})", icon="✅"); st.rerun()
+
 @st.dialog("✏️ Edit Transaction", width="small")
 def dlg_edit(txn):
     cats_sorted, sub_map = load_cat_freq()
@@ -703,7 +757,6 @@ def dlg_edit(txn):
     cur_sub = str(txn.get("Subcategory","")).strip()
     orig_cat, orig_sub = cur_cat, cur_sub
 
-    # Pre-select Category index
     cat_opts = cats_sorted + ["➕ New category…"]
     cat_idx = cats_sorted.index(cur_cat) if cur_cat in cats_sorted else 0
 
@@ -721,7 +774,6 @@ def dlg_edit(txn):
         sel_cat = cats_sorted[0] if cats_sorted else "Others"
     else: sel_cat = sel_cat_r
 
-    # Pre-select Subcategory index
     subs = sub_map.get(sel_cat, [])
     sub_idx = subs.index(cur_sub) if cur_sub in subs else 0
     sub_opts = subs + ["➕ New subcategory…"] if subs else ["➕ New subcategory…"]
@@ -735,7 +787,6 @@ def dlg_edit(txn):
         sel_sub = subs[0] if subs else ""
     else: sel_sub = sel_sub_r
     
-    # Pre-select Account Tag index
     existing_accounts = extract_accounts(df_all)
     cur_tag = str(txn.get("Tags","")).strip()
     acct_opts = []
@@ -762,11 +813,9 @@ def dlg_edit(txn):
                     "PaymentMethod": txn.get("PaymentMethod","UPI"), "Tags": dlg_acct,
                     "Notes": notes, "Source": txn.get("Source","manual"), "AutoCat": "no",
                 }
-                # Fix #4: Commit single edit to Google Sheets first
                 _update_txn(txn["RowID"], upd)
                 st.session_state.edit_txn = None
 
-                # Fix #3: Check if similar transactions exist BEFORE showing bulk suggest popup
                 if sel_cat != orig_cat or sel_sub != orig_sub:
                     others = df_all[(df_all["Merchant"].str.strip().str.lower() == merch.strip().lower()) & (df_all["RowID"].astype(str) != str(txn["RowID"]))]
                     to_update = others[~((others["Category"] == sel_cat) & (others["Subcategory"] == sel_sub))]
@@ -777,10 +826,8 @@ def dlg_edit(txn):
                             "sub": sel_sub,
                             "skip_id": txn["RowID"]
                         }
-                    else:
-                        st.toast("✅ Transaction updated!", icon="✅")
-                else:
-                    st.toast("✅ Transaction updated!", icon="✅")
+                    else: st.toast("✅ Transaction updated!", icon="✅")
+                else: st.toast("✅ Transaction updated!", icon="✅")
                 st.rerun()
     with c2:
         if st.button("🗑️ Delete", use_container_width=True):
@@ -809,7 +856,6 @@ def dlg_bulk_suggest():
             _bulk_update_merchant_cat(to_update["RowID"].astype(str).tolist(), new_cat, new_sub)
             st.session_state.pending_bulk = None; st.rerun()
     with b2:
-        # Fix #4: Clear pending_bulk. Edited transaction saved in dlg_edit remains saved!
         if st.button("✕ Skip", use_container_width=True):
             st.session_state.pending_bulk = None
             st.toast("✅ Saved edit for this transaction.", icon="✅")
@@ -840,13 +886,11 @@ def dlg_review_misc():
         if st.button("✕ Close", use_container_width=True):
             st.session_state.review_misc_page = False; st.rerun()
 
-    # Per-merchant breakdown with Fix #1 Hashed Keys
     st.write("---")
     st.caption("OR Recategorize By Merchant Group:")
     merch_groups = misc.groupby("Merchant").agg(count=("RowID","count"), total=("Amount", lambda x: x.abs().sum()), ids=("RowID", list)).reset_index().sort_values("total", ascending=False)
     for idx, mg in merch_groups.head(15).iterrows():
         mname, mcount, mtotal, mids = str(mg["Merchant"]), int(mg["count"]), float(mg["total"]), [str(x) for x in mg["ids"]]
-        # Fix #1: Unique hashed element key for each row loop
         unique_k = f"{idx}_{hash(mname) & 0xffffff}"
         mc1, mc2, mc3 = st.columns([3, 3, 1])
         with mc1: st.write(f"**{mname[:22]}** ({mcount} txns, ₹{mtotal:,.0f})")
@@ -889,7 +933,6 @@ def render_top_bar():
         with cols[i]:
             if st.button(label, key=f"nav_btn_{key}", type="primary" if st.session_state.nav == key else "secondary", use_container_width=True):
                 st.session_state.nav = key
-                # RESET all popup dialog flags on page navigation so dialogs do not follow user
                 st.session_state.review_misc_page = False
                 st.session_state.edit_txn = None
                 st.session_state.pending_bulk = None
@@ -979,25 +1022,28 @@ def screen_home():
         start_idx = (page - 1) * n_rows
         recent_df = all_sorted.iloc[start_idx : start_idx + n_rows]
 
-        h1, h2, h3, h4, h5 = st.columns([0.6, 1.2, 1.2, 2.5, 2.0])
-        with h1: st.caption("**EDIT**")
-        with h2: st.caption("**DATE**")
-        with h3: st.caption("**AMOUNT**")
-        with h4: st.caption("**MERCHANT**")
-        with h5: st.caption("**CATEGORY**")
-
+        # Mobile-Native Card Rows
         for idx, row in recent_df.iterrows():
-            c_ed, c_dt, c_am, c_me, c_ct = st.columns([0.6, 1.2, 1.2, 2.5, 2.0])
             rid = str(row.get("RowID", idx))
+            c_ed, c_card = st.columns([0.15, 0.85])
             with c_ed:
                 if st.button("✏️", key=f"h_ed_{rid}"):
                     st.session_state.edit_txn = row.to_dict(); st.rerun()
-            with c_dt: st.write(row["Date"].strftime("%d %b %Y") if pd.notna(row["Date"]) else "—")
-            with c_am: st.markdown(f'<span class="amt-exp">-{sym}{abs(row["Amount"]):,.0f}</span>', unsafe_allow_html=True)
-            with c_me: st.markdown(f'**{row["Merchant"]}**')
-            with c_ct:
-                acct = account_badge_html(row.get("Tags","")) if row.get("Tags") else ""
-                st.markdown(f'<span class="cat-pill">{row["Category"]}</span> <span class="subcat-text">{row["Subcategory"]}</span> {acct}', unsafe_allow_html=True)
+            with c_card:
+                dt_str = row["Date"].strftime("%d %b %Y") if pd.notna(row["Date"]) else "—"
+                notes_html = f'<div class="txn-notes-tag">📝 {row["Notes"]}</div>' if str(row.get("Notes","")).strip() else ""
+                acct_badge = account_badge_html(row.get("Tags","")) if row.get("Tags") else ""
+                st.markdown(f"""
+                <div class="mobile-card-row">
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:800;font-size:0.88rem;">{row["Merchant"]}</div>
+                        <div style="font-size:0.72rem;color:{C["muted"]};margin-top:2px;">
+                            {dt_str} · <span class="cat-pill">{row["Category"]}</span> <span class="subcat-text">{row["Subcategory"]}</span> {acct_badge}
+                        </div>
+                        {notes_html}
+                    </div>
+                    <div class="amt-exp" style="font-size:0.95rem;">-{sym}{abs(row["Amount"]):,.0f}</div>
+                </div>""", unsafe_allow_html=True)
 
         st.markdown("<hr style='margin:10px 0'>", unsafe_allow_html=True)
         ft1, ft2 = st.columns([2, 2])
@@ -1027,12 +1073,17 @@ def screen_transactions():
     q = st.text_input("", placeholder="🔍 Search merchant, notes, account, or category...", key="spends_search", label_visibility="collapsed")
 
     months_opts = get_descending_months(df)
-    c1, c2, c3 = st.columns(3)
+    cats_sorted, sub_map = load_cat_freq()
+
+    c1, c2, c3, c4 = st.columns(4)
     with c1: sel_month = st.selectbox("📅 Period:", months_opts, key="spends_m_dd")
     with c2: sel_acct = st.selectbox("💳 Account:", ["All"] + extract_accounts(df), key="spends_a_dd")
     with c3: sel_pm   = st.selectbox("↕️ Method:", ["All"] + PAYMENT_METHODS, key="spends_pm_dd")
+    
+    # Dynamic Subcategory Filter
+    avail_subs = sub_map.get(st.session_state.filter_cat, []) if st.session_state.filter_cat != "All" else []
+    with c4: sel_subcat = st.selectbox("📂 Subcategory:", ["All"] + avail_subs, key="spends_subcat_dd")
 
-    cats_sorted, sub_map = load_cat_freq()
     cats_list = ["All"] + cats_sorted[:6]
     chip_cols = st.columns(len(cats_list))
     for i, cat in enumerate(cats_list):
@@ -1051,6 +1102,8 @@ def screen_transactions():
         filtered = filtered[filtered["PaymentMethod"] == sel_pm]
     if st.session_state.filter_cat != "All" and not filtered.empty:
         filtered = filtered[filtered["Category"] == st.session_state.filter_cat]
+    if sel_subcat != "All" and not filtered.empty:
+        filtered = filtered[filtered["Subcategory"] == sel_subcat]
     if q and not filtered.empty:
         ql = q.lower().strip()
         filtered = filtered[filtered.apply(lambda r: any(ql in str(r.get(col,"")).lower() for col in ["Merchant","Category","Subcategory","Notes","Tags"]), axis=1)]
@@ -1074,25 +1127,28 @@ def screen_transactions():
         start_idx = (page - 1) * n_rows
         spends_df = all_sorted.iloc[start_idx : start_idx + n_rows]
 
-        h1, h2, h3, h4, h5 = st.columns([0.6, 1.2, 1.2, 2.5, 2.0])
-        with h1: st.caption("**EDIT**")
-        with h2: st.caption("**DATE**")
-        with h3: st.caption("**AMOUNT**")
-        with h4: st.caption("**MERCHANT**")
-        with h5: st.caption("**CATEGORY & TAG**")
-
+        # Mobile-Native Card Rows
         for idx, row in spends_df.iterrows():
-            c_ed, c_dt, c_am, c_me, c_ct = st.columns([0.6, 1.2, 1.2, 2.5, 2.0])
             rid = str(row.get("RowID", idx))
+            c_ed, c_card = st.columns([0.15, 0.85])
             with c_ed:
                 if st.button("✏️", key=f"sp_ed_{rid}"):
                     st.session_state.edit_txn = row.to_dict(); st.rerun()
-            with c_dt: st.write(row["Date"].strftime("%d %b %Y") if pd.notna(row["Date"]) else "—")
-            with c_am: st.markdown(f'<span class="amt-exp">-{sym}{abs(row["Amount"]):,.0f}</span>', unsafe_allow_html=True)
-            with c_me: st.markdown(f'**{row["Merchant"]}**')
-            with c_ct:
-                acct = account_badge_html(row.get("Tags","")) if row.get("Tags") else ""
-                st.markdown(f'<span class="cat-pill">{row["Category"]}</span> <span class="subcat-text">{row["Subcategory"]}</span> {acct}', unsafe_allow_html=True)
+            with c_card:
+                dt_str = row["Date"].strftime("%d %b %Y") if pd.notna(row["Date"]) else "—"
+                notes_html = f'<div class="txn-notes-tag">📝 {row["Notes"]}</div>' if str(row.get("Notes","")).strip() else ""
+                acct_badge = account_badge_html(row.get("Tags","")) if row.get("Tags") else ""
+                st.markdown(f"""
+                <div class="mobile-card-row">
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:800;font-size:0.88rem;">{row["Merchant"]}</div>
+                        <div style="font-size:0.72rem;color:{C["muted"]};margin-top:2px;">
+                            {dt_str} · <span class="cat-pill">{row["Category"]}</span> <span class="subcat-text">{row["Subcategory"]}</span> {acct_badge}
+                        </div>
+                        {notes_html}
+                    </div>
+                    <div class="amt-exp" style="font-size:0.95rem;">-{sym}{abs(row["Amount"]):,.0f}</div>
+                </div>""", unsafe_allow_html=True)
 
         st.markdown("<hr style='margin:10px 0'>", unsafe_allow_html=True)
         ft1, ft2 = st.columns([2, 2])
@@ -1127,19 +1183,19 @@ def screen_add():
     with p1:
         if st.button("☕ Coffee ₹150", use_container_width=True):
             _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Coffee Shop", "Amount": -150, "Type": "Expense", "Category": "Food & Dining", "Subcategory": "Snacks & Sweets", "Tags": "Paytm UPI", "Source": "preset"})
-            st.success("✅ Added Coffee ₹150"); st.rerun()
+            st.toast("✅ Added Coffee ₹150", icon="✅"); st.rerun()
     with p2:
         if st.button("⛽ Fuel ₹1,000", use_container_width=True):
             _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Fuel Station", "Amount": -1000, "Type": "Expense", "Category": "Transport", "Subcategory": "Fuel", "Tags": "HDFC CC 7500", "Source": "preset"})
-            st.success("✅ Added Fuel ₹1,000"); st.rerun()
+            st.toast("✅ Added Fuel ₹1,000", icon="✅"); st.rerun()
     with p3:
         if st.button("🍔 Swiggy ₹400", use_container_width=True):
             _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Swiggy", "Amount": -400, "Type": "Expense", "Category": "Food & Dining", "Subcategory": "Restaurants & Mess", "Tags": "Paytm UPI", "Source": "preset"})
-            st.success("✅ Added Swiggy ₹400"); st.rerun()
+            st.toast("✅ Added Swiggy ₹400", icon="✅"); st.rerun()
     with p4:
         if st.button("🛒 Blinkit ₹600", use_container_width=True):
             _write_txn({"RowID": str(uuid.uuid4())[:8], "Date": date.today().strftime("%d/%m/%Y"), "Merchant": "Blinkit", "Amount": -600, "Type": "Expense", "Category": "Food & Dining", "Subcategory": "Groceries", "Tags": "HDFC CC 7500", "Source": "preset"})
-            st.success("✅ Added Blinkit ₹600"); st.rerun()
+            st.toast("✅ Added Blinkit ₹600", icon="✅"); st.rerun()
 
     st.markdown('<div class="card-title" style="margin-top:16px;">✍️ Manual Transaction Entry</div>', unsafe_allow_html=True)
     with st.form("manual_add_form", clear_on_submit=True):
@@ -1175,6 +1231,7 @@ def screen_add():
                 sel_sub = subs[0] if subs else ""
             else: sel_sub = sel_sub_r
             txn_date = st.date_input("Date", value=date.today())
+            notes = st.text_input("Notes (Optional)")
 
         if st.form_submit_button("💾 Save Transaction", use_container_width=True, type="primary"):
             if amount > 0 and merch.strip():
@@ -1182,7 +1239,7 @@ def screen_add():
                     "RowID": str(uuid.uuid4())[:8], "Date": txn_date.strftime("%d/%m/%Y"),
                     "Merchant": merch.strip().title(), "Amount": -abs(amount), "Type": "Expense",
                     "Category": sel_cat, "Subcategory": sel_sub, "PaymentMethod": "UPI",
-                    "Tags": sel_acct, "Source": "manual", "AutoCat": "no"
+                    "Tags": sel_acct, "Notes": notes, "Source": "manual", "AutoCat": "no"
                 })
                 st.success(f"✅ Added {merch} ({sym}{amount:,.0f})"); st.rerun()
 
@@ -1254,19 +1311,18 @@ def screen_add():
                 st.session_state.preview_rows = None; st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SCREEN 4 — INSIGHTS & ANALYTICS
+#  REIMAGINED SCREEN 4 — INSIGHTS & ANALYTICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_analytics():
     df = _load_transactions()
     settings = load_settings()
-    budgets = load_budgets()
-    sym = settings.get("currency_symbol","₹")
+    sym = settings.get("currency_symbol", "₹")
 
     months_opts = get_descending_months(df)
     c1, c2 = st.columns(2)
     with c1: sel_month = st.selectbox("📅 Period:", months_opts, key="insights_m_dd")
-    with c2: sel_acct = st.selectbox("💳 Account:", ["All"] + extract_accounts(df), key="insights_a_dd")
+    with c2: sel_acct = st.selectbox("💳 Account Filter:", ["All"] + extract_accounts(df), key="insights_a_dd")
 
     if df.empty: st.info("No transaction data available."); return
 
@@ -1277,64 +1333,79 @@ def screen_analytics():
 
     cur_tot = abs(exp_df["Amount"].sum()) if not exp_df.empty else 0
 
-    # MoM Variance
+    # MoM Calculation
     prev_dt = sel_dt - timedelta(days=15)
     pms, pme = month_range(prev_dt.year, prev_dt.month)
     prev_df = filter_by_account(df[(df["Date"].dt.date >= pms) & (df["Date"].dt.date <= pme) & (df["Amount"] < 0)], sel_acct)
     prev_tot = abs(prev_df["Amount"].sum()) if not prev_df.empty else 0
-    delta_pct = ((cur_tot - prev_tot)/prev_tot*100) if prev_tot > 0 else 0
+    delta = cur_tot - prev_tot
+    delta_pct = ((delta) / prev_tot * 100) if prev_tot > 0 else 0
 
-    i1, i2, i3 = st.columns(3)
-    with i1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">This Period</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{cur_tot:,.0f}</div></div>', unsafe_allow_html=True)
-    with i2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Previous Period</div><div class="kpi-value">{sym}{prev_tot:,.0f}</div></div>', unsafe_allow_html=True)
-    with i3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Variance</div><div class="kpi-value" style="color:{C["warning"] if delta_pct>0 else C["income"]}">{"▲" if delta_pct>0 else "▼"} {abs(delta_pct):.1f}%</div></div>', unsafe_allow_html=True)
+    days_in_m = calendar.monthrange(sel_dt.year, sel_dt.month)[1]
+    daily_avg = cur_tot / days_in_m if days_in_m > 0 else 0
 
-    # Donut Chart & Daily Bars
+    # 1. MoM Comparison Cards
+    i1, i2, i3, i4 = st.columns(4)
+    with i1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">{sel_month} Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{cur_tot:,.0f}</div><div class="kpi-sub">Selected Period</div></div>', unsafe_allow_html=True)
+    with i2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Previous Period</div><div class="kpi-value" style="color:{C["muted"]}">{sym}{prev_tot:,.0f}</div><div class="kpi-sub">{prev_dt.strftime("%B %Y")}</div></div>', unsafe_allow_html=True)
+    with i3:
+        v_color = C["expense"] if delta > 0 else C["income"]
+        v_arrow = "▲" if delta > 0 else "▼"
+        st.markdown(f'<div class="kpi-card"><div class="kpi-label">MoM Variance</div><div class="kpi-value" style="color:{v_color}">{v_arrow} {abs(delta_pct):.1f}%</div><div class="kpi-sub">{v_arrow}{sym}{abs(delta):,.0f} vs prev month</div></div>', unsafe_allow_html=True)
+    with i4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Daily Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{daily_avg:,.0f}</div><div class="kpi-sub">Avg per day ({days_in_m} days)</div></div>', unsafe_allow_html=True)
+
+    # 2. Daily Expense Trend Chart
+    st.markdown('<div class="card-title" style="margin-top:16px;">📅 Daily Expense Trend</div>', unsafe_allow_html=True)
     if not exp_df.empty:
         exp_df["Abs"] = exp_df["Amount"].abs()
-        d1, d2 = st.columns(2)
-        with d1:
-            grp_cat = exp_df.groupby("Category")["Abs"].sum().reset_index()
-            fig_pie = px.pie(grp_cat, values="Abs", names="Category", hole=0.5, color_discrete_sequence=px.colors.qualitative.Bold)
-            fig_pie.update_layout(height=220, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], showlegend=False)
-            st.plotly_chart(fig_pie, use_container_width=True, config={"displayModeBar":False})
-        with d2:
-            exp_df["Day"] = exp_df["Date"].dt.day
-            daily_grp = exp_df.groupby("Day")["Abs"].sum().reset_index()
-            fig_daily = go.Figure(go.Bar(x=daily_grp["Day"], y=daily_grp["Abs"], marker_color=C["primary"]))
-            fig_daily.update_layout(height=220, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], xaxis=dict(title="Day of Month"), yaxis=dict(tickprefix=sym))
-            st.plotly_chart(fig_daily, use_container_width=True, config={"displayModeBar":False})
+        exp_df["Day"] = exp_df["Date"].dt.day
+        daily_grp = exp_df.groupby("Day")["Abs"].sum().reset_index()
+        all_days = pd.DataFrame({"Day": range(1, days_in_m + 1)})
+        daily_full = pd.merge(all_days, daily_grp, on="Day", how="left").fillna(0)
 
-    # Budget vs Actual
-    if not budgets.empty and not exp_df.empty:
-        st.markdown('<div class="card-title" style="margin-top:16px;">🎯 Budget vs Actual Progress</div>', unsafe_allow_html=True)
-        cat_tots = exp_df.groupby("Category")["Abs"].sum()
-        for _, brow in budgets.iterrows():
-            cat, bud = str(brow["Category"]), float(brow["MonthlyBudget"] or 0)
-            if bud <= 0: continue
-            act = cat_tots.get(cat, 0)
-            pct = min(act / bud * 100, 100)
-            st.markdown(f'**{cat_icon(cat)} {cat}:** {sym}{act:,.0f} / {sym}{bud:,.0f}')
-            st.progress(pct / 100)
+        fig_daily = go.Figure()
+        fig_daily.add_trace(go.Bar(x=daily_full["Day"], y=daily_full["Abs"], marker_color=C["primary"], name="Daily Spend"))
+        fig_daily.update_layout(height=220, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], xaxis=dict(title="Day of Month", dtick=2), yaxis=dict(tickprefix=sym), showlegend=False)
+        st.plotly_chart(fig_daily, use_container_width=True, config={"displayModeBar": False})
 
-    # Top Merchants Historical Spend Comparison (3M, 6M, 12M)
+    # 3 Descending Breakdowns
+    st.markdown('<div class="card-title" style="margin-top:16px;">📊 Ranked Spend Breakdowns</div>', unsafe_allow_html=True)
+    b1, b2, b3 = st.columns(3)
+
     if not exp_df.empty:
-        st.markdown('<div class="card-title" style="margin-top:16px;">🏪 Top Merchants Historical Comparison</div>', unsafe_allow_html=True)
-        tm = exp_df.groupby("Merchant")["Abs"].sum().sort_values(ascending=False).head(5)
-        all_exp_tm = filter_by_account(df[df["Amount"]<0].copy(), sel_acct)
-        all_exp_tm["Abs"] = all_exp_tm["Amount"].abs()
-        for merchant, amt in tm.items():
-            hist = all_exp_tm[all_exp_tm["Merchant"]==merchant]
-            m3  = hist[hist["Date"] >= pd.Timestamp.now() - pd.DateOffset(months=3)]["Abs"].sum()
-            m6  = hist[hist["Date"] >= pd.Timestamp.now() - pd.DateOffset(months=6)]["Abs"].sum()
-            st.write(f"**{merchant}:** This Month: `{sym}{amt:,.0f}` | 3M Total: `{sym}{m3:,.0f}` | 6M Total: `{sym}{m6:,.0f}`")
+        with b1:
+            st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+            st.markdown('**Category Breakdown (Descending)**')
+            cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+            for _, row in cat_grp.iterrows():
+                c_name, c_amt = str(row["Category"]), float(row["Abs"])
+                pct = (c_amt / cur_tot * 100) if cur_tot > 0 else 0
+                st.write(f"{cat_icon(c_name)} **{c_name}:** `{sym}{c_amt:,.0f}` ({pct:.0f}%)")
+                st.progress(pct / 100)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    # Telegram Trigger Guard
-    try:
-        tg_cfg = load_telegram_settings()
-        if tg_cfg.get("bot_token") and tg_cfg.get("chat_id"):
-            check_and_send_budget_alerts(df, budgets, settings, tg_cfg)
-    except: pass
+        with b2:
+            st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+            st.markdown('**Subcategory Breakdown (Descending)**')
+            sub_grp = exp_df.groupby("Subcategory")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+            for _, row in sub_grp.head(10).iterrows():
+                s_name, s_amt = str(row["Subcategory"]), float(row["Abs"])
+                pct = (s_amt / cur_tot * 100) if cur_tot > 0 else 0
+                st.write(f"📂 **{s_name}:** `{sym}{s_amt:,.0f}` ({pct:.0f}%)")
+                st.progress(pct / 100)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with b3:
+            st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+            st.markdown('**Account Breakdown (Descending)**')
+            acct_grp = exp_df.groupby("Tags")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+            for _, row in acct_grp.iterrows():
+                a_name, a_amt = str(row["Tags"]), float(row["Abs"])
+                if not a_name or a_name == "nan": a_name = "Untagged"
+                pct = (a_amt / cur_tot * 100) if cur_tot > 0 else 0
+                st.write(f"{account_badge_html(a_name)}: `{sym}{a_amt:,.0f}` ({pct:.0f}%)", unsafe_allow_html=True)
+                st.progress(pct / 100)
+            st.markdown('</div>', unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SCREEN 5 — SETTINGS & FULL TOOLS SUITE
@@ -1349,7 +1420,6 @@ def screen_settings():
 
     st.markdown('<div class="card-title">⚙️ Settings & Configuration Engine</div>', unsafe_allow_html=True)
     
-    # 1. Trigger Run Now
     st.markdown('<div class="card-panel">', unsafe_allow_html=True)
     rn1, rn2 = st.columns([4, 1])
     with rn1: st.write("Queue immediate background execution of `importAll()` in Google Apps Script.")
@@ -1358,7 +1428,6 @@ def screen_settings():
             trigger_run_now(); st.success("✅ Trigger queued!"); st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # 2. General Settings
     with st.expander("💱 Currency & Monthly Budget", expanded=False):
         sym = st.text_input("Currency Symbol", value=settings.get("currency_symbol","₹"))
         m_budget = st.number_input("Monthly Budget Limit", value=float(settings.get("monthly_budget","50000")), min_value=0.0)
@@ -1371,7 +1440,6 @@ def screen_settings():
                     if row and row[0] == k: ws.update_cell(i, 2, v); break
             st.cache_data.clear(); st.success("✅ Config Saved!"); st.rerun()
 
-    # 3. Category Budgets Editor
     with st.expander("🎯 Set Category Budgets", expanded=False):
         cats = cats_df["Category"].unique().tolist() if not cats_df.empty else []
         bmap = dict(zip(budgets["Category"], budgets["MonthlyBudget"].astype(float))) if not budgets.empty else {}
@@ -1385,7 +1453,6 @@ def screen_settings():
             if new_bmap: ws.append_rows([[c,a] for c,a in new_bmap.items()])
             st.cache_data.clear(); st.success("✅ Budgets saved!"); st.rerun()
 
-    # 4. Smart Categorization Keyword Rules
     with st.expander("🤖 Edit Keyword Rules", expanded=False):
         kw_updates = {}
         for _, row in cats_df.iterrows():
@@ -1399,7 +1466,6 @@ def screen_settings():
             ws.append_rows(rows_to_save)
             st.cache_data.clear(); st.success("✅ Rules updated!"); st.rerun()
 
-    # 5. Email Import Rules Manager (With Live Parser)
     with st.expander(f"📧 Email Import Rules ({len(rules_df)})", expanded=False):
         if not rules_df.empty:
             for _, rule in rules_df.iterrows():
@@ -1407,7 +1473,6 @@ def screen_settings():
                 is_active = str(rule.get("Active","TRUE")).upper() in ("TRUE","YES","1")
                 is_dry = str(rule.get("DryRun","FALSE")).upper() in ("TRUE","YES","1")
                 st.write(f"**{r_nm}** ({'Active' if is_active else 'Off'}) - `{'Dry Run' if is_dry else 'Live'}`")
-                st.caption(f"Sender: {rule.get('Sender','')} | Account: {rule.get('AccountLabel','')}")
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button(f"Toggle Active: {r_nm}", key=f"tg_act_{r_nm}"):
@@ -1417,46 +1482,11 @@ def screen_settings():
                         _delete_email_rule(r_nm); st.rerun()
                 st.markdown("---")
 
-        st.write("##### Add New Email Import Rule")
-        with st.form("add_rule_form", clear_on_submit=True):
-            nr_name   = st.text_input("Rule Name")
-            nr_sender = st.text_input("Sender Email", placeholder="alerts@hdfcbank.bank.in")
-            nr_subj   = st.text_input("Subject Contains", placeholder="debited via Credit Card")
-            nr_tmpl   = st.text_area("Body Template", placeholder="Rs.{amt} is debited from your {act} towards {tdetails} on {date}")
-            nr_acct   = st.text_input("Account Label", placeholder="HDFC CC 7500")
-            nr_test_body = st.text_area("Sample Email Body to Test")
-            
-            tb1, tb2 = st.columns(2)
-            with tb1: test_clk = st.form_submit_button("🔍 Test Parse")
-            with tb2: save_clk = st.form_submit_button("💾 Save Rule", type="primary")
-
-            if test_clk:
-                if nr_tmpl.strip() and nr_test_body.strip():
-                    st.session_state.email_parse_result = parse_email_body(nr_tmpl.strip(), nr_test_body.strip())
-            if save_clk:
-                if nr_name.strip() and nr_sender.strip() and nr_tmpl.strip():
-                    _write_email_rule({
-                        "RuleName": nr_name.strip(), "Sender": nr_sender.strip(),
-                        "SubjectContains": nr_subj.strip(), "BodyTemplate": nr_tmpl.strip(),
-                        "DateFormat": "", "DefaultType": "Expense", "AccountLabel": nr_acct.strip(),
-                        "Active": "TRUE", "DryRun": "TRUE", "LookbackDays": "2"
-                    })
-                    st.success("✅ Email Rule Saved!"); st.rerun()
-
-        if st.session_state.get("email_parse_result") is not None:
-            epr = st.session_state.email_parse_result
-            if epr: st.success(f"✅ Parsed Successfully: {epr}")
-            else: st.error("❌ Parse Failed.")
-
-    # 6. Import Log & Parse Errors
     with st.expander("📊 Recent Import Log & Parse Errors", expanded=False):
         log_df = load_importlog()
         if not log_df.empty: st.dataframe(log_df.tail(5), use_container_width=True)
-        if not errors_df.empty:
-            st.caption("Parse Errors:")
-            st.dataframe(errors_df.tail(5), use_container_width=True)
+        if not errors_df.empty: st.dataframe(errors_df.tail(5), use_container_width=True)
 
-    # 7. Merchant Aliases
     with st.expander("🏷️ Merchant Aliases Manager", expanded=False):
         aliases = load_merchant_aliases()
         if aliases:
@@ -1465,49 +1495,15 @@ def screen_settings():
                 with ac1: st.write(f"`{raw}`")
                 with ac2: st.write(f"→ **{canonical}**")
                 with ac3:
-                    if st.button("✕", key=f"del_al_{raw}"):
-                        delete_merchant_alias(raw); st.rerun()
-        with st.form("add_alias_f", clear_on_submit=True):
-            a1, a2 = st.columns(2)
-            with a1: raw_in = st.text_input("Raw Name")
-            with a2: can_in = st.text_input("Canonical Name")
-            if st.form_submit_button("➕ Add Alias", type="primary"):
-                if raw_in.strip() and can_in.strip():
-                    save_merchant_alias(raw_in.strip(), can_in.strip())
-                    st.success("✅ Alias Added!"); st.rerun()
+                    if st.button("✕", key=f"del_al_{raw}"): delete_merchant_alias(raw); st.rerun()
 
-    # 8. Date Audit & Fix Scanner
-    with st.expander("📅 Date Audit & Fix Scanner", expanded=False):
-        if st.button("🔍 Run Date Audit Scan", use_container_width=True):
-            df_scan = _load_transactions()
-            rpt = _detect_date_issues(df_scan)
-            st.write(f"Scanned **{rpt['total']}** rows: **{len(rpt['iso'])}** ISO dates, **{len(rpt['short_year'])}** short-year dates, **{len(rpt['ok'])}** correct MM/DD/YYYY.")
-
-    # 9. Telegram Alerts
-    with st.expander("📱 Telegram Alerts Config", expanded=False):
-        tg_cfg = load_telegram_settings()
-        tg_token = st.text_input("Bot Token", value=tg_cfg.get("bot_token",""), type="password")
-        tg_chat  = st.text_input("Chat ID", value=tg_cfg.get("chat_id",""))
-        tc1, tc2 = st.columns(2)
-        with tc1:
-            if st.button("💾 Save Telegram Config"):
-                save_telegram_setting("bot_token", tg_token)
-                save_telegram_setting("chat_id", tg_chat)
-                st.success("✅ Telegram config saved!"); st.rerun()
-        with tc2:
-            if st.button("🔔 Send Test Alert"):
-                ok, err = send_telegram(tg_token, tg_chat, "✅ ClearSpend Test Alert")
-                if ok: st.success("✅ Test message delivered!")
-                else: st.error(f"❌ Failed: {err}")
-
-    # 10. Export Data
     with st.expander("📤 Export Data CSV", expanded=False):
         df_exp = _load_transactions()
         if not df_exp.empty:
             st.download_button("⬇️ Download All Transactions as CSV", data=df_exp.to_csv(index=False).encode("utf-8"), file_name=f"clearspend_{date.today()}.csv", mime="text/csv", use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN ENTRYPOINT
+#  MAIN ENTRYPOINT & FLOATING FAB
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_setup():
@@ -1532,12 +1528,18 @@ def main():
     elif nav == "analytics": screen_analytics()
     elif nav == "settings": screen_settings()
 
+    # Floating Action Button FAB (➕ Quick Add Expense)
+    st.markdown('<div class="fab-button-fixed">', unsafe_allow_html=True)
+    if st.button("➕ Quick Add", key="global_fab_btn", type="primary"):
+        st.session_state.show_quick_add = True
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("show_quick_add"):
+        dlg_quick_add()
+
     if st.session_state.get("edit_txn"): dlg_edit(st.session_state.edit_txn)
     if st.session_state.get("pending_bulk"): dlg_bulk_suggest()
-    
-    # Only allow review dialog to show when on Spends page
-    if st.session_state.get("review_misc_page") and st.session_state.nav == "transactions":
-        dlg_review_misc()
+    if st.session_state.get("review_misc_page") and st.session_state.nav == "transactions": dlg_review_misc()
 
 if __name__ == "__main__":
     main()
