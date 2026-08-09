@@ -698,13 +698,19 @@ def init_state():
 def dlg_edit(txn):
     cats_sorted, sub_map = load_cat_freq()
     df_all = _load_transactions()
-    cur_cat, cur_sub = str(txn.get("Category","")), str(txn.get("Subcategory",""))
-    cats_ordered = ([cur_cat] + [c for c in cats_sorted if c != cur_cat] if cur_cat in cats_sorted else cats_sorted)
     
+    cur_cat = str(txn.get("Category","")).strip()
+    cur_sub = str(txn.get("Subcategory","")).strip()
+    orig_cat, orig_sub = cur_cat, cur_sub
+
+    # Pre-select Category index
+    cat_opts = cats_sorted + ["➕ New category…"]
+    cat_idx = cats_sorted.index(cur_cat) if cur_cat in cats_sorted else 0
+
     amount = st.number_input("Amount (₹)", value=abs(float(txn["Amount"])), min_value=0.0, step=1.0, format="%.0f")
     merch  = st.text_input("Merchant", value=txn["Merchant"])
     
-    sel_cat_r = st.selectbox("Category", cats_ordered + ["➕ New category…"])
+    sel_cat_r = st.selectbox("Category", cat_opts, index=cat_idx)
     if sel_cat_r == "➕ New category…":
         nc = st.text_input("New category name")
         ns = st.text_input("First subcategory name")
@@ -712,26 +718,35 @@ def dlg_edit(txn):
             if nc.strip() and ns.strip():
                 get_ss().worksheet("Categories").append_row([nc.strip(), ns.strip(),"","📌"])
                 st.cache_data.clear(); st.rerun()
-        sel_cat = cats_ordered[0] if cats_ordered else "Others"
+        sel_cat = cats_sorted[0] if cats_sorted else "Others"
     else: sel_cat = sel_cat_r
 
+    # Pre-select Subcategory index
     subs = sub_map.get(sel_cat, [])
-    subs_ordered = ([cur_sub] + [s for s in subs if s != cur_sub] if cur_sub in subs else subs)
-    sel_sub_r = st.selectbox("Subcategory", subs_ordered + ["➕ New subcategory…"] if subs_ordered else ["➕ New subcategory…"])
+    sub_idx = subs.index(cur_sub) if cur_sub in subs else 0
+    sub_opts = subs + ["➕ New subcategory…"] if subs else ["➕ New subcategory…"]
+    sel_sub_r = st.selectbox("Subcategory", sub_opts, index=sub_idx)
     if sel_sub_r == "➕ New subcategory…":
         ns2 = st.text_input("New subcategory name")
         if st.button("✅ Add Subcategory"):
             if ns2.strip():
                 get_ss().worksheet("Categories").append_row([sel_cat, ns2.strip(),"","📌"])
                 st.cache_data.clear(); st.rerun()
-        sel_sub = subs_ordered[0] if subs_ordered else ""
+        sel_sub = subs[0] if subs else ""
     else: sel_sub = sel_sub_r
     
+    # Pre-select Account Tag index
     existing_accounts = extract_accounts(df_all)
-    cur_tag = str(txn.get("Tags",""))
-    acct_opts = existing_accounts + ([cur_tag] if cur_tag and cur_tag not in existing_accounts else []) + ["✏️ New account…"]
-    dlg_acct_raw = st.selectbox("Account Tag", acct_opts)
-    dlg_acct = st.text_input("Account label", value=cur_tag) if dlg_acct_raw == "✏️ New account…" else dlg_acct_raw
+    cur_tag = str(txn.get("Tags","")).strip()
+    acct_opts = []
+    for a in existing_accounts:
+        if a and a not in acct_opts: acct_opts.append(a)
+    if cur_tag and cur_tag not in acct_opts: acct_opts.append(cur_tag)
+    acct_opts.append("✏️ New account…")
+    acct_idx = acct_opts.index(cur_tag) if cur_tag in acct_opts else 0
+
+    dlg_acct_raw = st.selectbox("Account Tag", acct_opts, index=acct_idx)
+    dlg_acct = st.text_input("New Account Label", value=cur_tag) if dlg_acct_raw == "✏️ New account…" else dlg_acct_raw
     
     txn_dt = st.date_input("Date", value=txn["Date"].date() if hasattr(txn["Date"],"date") else date.today())
     notes  = st.text_input("Notes", value=txn.get("Notes",""))
@@ -747,10 +762,25 @@ def dlg_edit(txn):
                     "PaymentMethod": txn.get("PaymentMethod","UPI"), "Tags": dlg_acct,
                     "Notes": notes, "Source": txn.get("Source","manual"), "AutoCat": "no",
                 }
+                # Fix #4: Commit single edit to Google Sheets first
                 _update_txn(txn["RowID"], upd)
-                if sel_cat != cur_cat or sel_sub != cur_sub:
-                    st.session_state.pending_bulk = {"merchant": merch.strip(), "cat": sel_cat, "sub": sel_sub, "skip_id": txn["RowID"]}
                 st.session_state.edit_txn = None
+
+                # Fix #3: Check if similar transactions exist BEFORE showing bulk suggest popup
+                if sel_cat != orig_cat or sel_sub != orig_sub:
+                    others = df_all[(df_all["Merchant"].str.strip().str.lower() == merch.strip().lower()) & (df_all["RowID"].astype(str) != str(txn["RowID"]))]
+                    to_update = others[~((others["Category"] == sel_cat) & (others["Subcategory"] == sel_sub))]
+                    if not to_update.empty:
+                        st.session_state.pending_bulk = {
+                            "merchant": merch.strip(),
+                            "cat": sel_cat,
+                            "sub": sel_sub,
+                            "skip_id": txn["RowID"]
+                        }
+                    else:
+                        st.toast("✅ Transaction updated!", icon="✅")
+                else:
+                    st.toast("✅ Transaction updated!", icon="✅")
                 st.rerun()
     with c2:
         if st.button("🗑️ Delete", use_container_width=True):
@@ -767,6 +797,10 @@ def dlg_bulk_suggest():
     df_all = _load_transactions()
     others = df_all[(df_all["Merchant"].str.strip().str.lower() == merchant.strip().lower()) & (df_all["RowID"].astype(str) != str(skip_id))]
     to_update = others[~((others["Category"] == new_cat) & (others["Subcategory"] == new_sub))]
+
+    if to_update.empty:
+        st.session_state.pending_bulk = None; st.rerun(); return
+
     st.write(f"Found **{len(to_update)}** past transactions for **{merchant}** with different category.")
     st.dataframe(to_update[["Date","Merchant","Amount","Category","Subcategory"]].head(10), use_container_width=True)
     b1, b2 = st.columns(2)
@@ -775,8 +809,11 @@ def dlg_bulk_suggest():
             _bulk_update_merchant_cat(to_update["RowID"].astype(str).tolist(), new_cat, new_sub)
             st.session_state.pending_bulk = None; st.rerun()
     with b2:
+        # Fix #4: Clear pending_bulk. Edited transaction saved in dlg_edit remains saved!
         if st.button("✕ Skip", use_container_width=True):
-            st.session_state.pending_bulk = None; st.rerun()
+            st.session_state.pending_bulk = None
+            st.toast("✅ Saved edit for this transaction.", icon="✅")
+            st.rerun()
 
 @st.dialog("🗂️ Review Uncategorised Transactions", width="small")
 def dlg_review_misc():
@@ -803,18 +840,21 @@ def dlg_review_misc():
         if st.button("✕ Close", use_container_width=True):
             st.session_state.review_misc_page = False; st.rerun()
 
+    # Per-merchant breakdown with Fix #1 Hashed Keys
     st.write("---")
     st.caption("OR Recategorize By Merchant Group:")
     merch_groups = misc.groupby("Merchant").agg(count=("RowID","count"), total=("Amount", lambda x: x.abs().sum()), ids=("RowID", list)).reset_index().sort_values("total", ascending=False)
-    for _, mg in merch_groups.head(10).iterrows():
+    for idx, mg in merch_groups.head(15).iterrows():
         mname, mcount, mtotal, mids = str(mg["Merchant"]), int(mg["count"]), float(mg["total"]), [str(x) for x in mg["ids"]]
+        # Fix #1: Unique hashed element key for each row loop
+        unique_k = f"{idx}_{hash(mname) & 0xffffff}"
         mc1, mc2, mc3 = st.columns([3, 3, 1])
-        with mc1: st.write(f"**{mname[:20]}** ({mcount} txns, ₹{mtotal:,.0f})")
+        with mc1: st.write(f"**{mname[:22]}** ({mcount} txns, ₹{mtotal:,.0f})")
         with mc2:
-            sc = st.selectbox("", cats_sorted, key=f"rm_c_{mname[:15]}", label_visibility="collapsed")
-            ss = st.selectbox("", sub_map.get(sc, ["Miscellaneous"]), key=f"rm_s_{mname[:15]}", label_visibility="collapsed")
+            sc = st.selectbox("", cats_sorted, key=f"rm_c_{unique_k}", label_visibility="collapsed")
+            ss = st.selectbox("", sub_map.get(sc, ["Miscellaneous"]), key=f"rm_s_{unique_k}", label_visibility="collapsed")
         with mc3:
-            if st.button("✓", key=f"rm_ap_{mname[:15]}"):
+            if st.button("✓", key=f"rm_ap_{unique_k}"):
                 _bulk_update_merchant_cat(mids, sc, ss); st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
