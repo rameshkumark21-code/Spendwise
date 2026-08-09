@@ -1311,7 +1311,7 @@ def screen_add():
                 st.session_state.preview_rows = None; st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  REIMAGINED SCREEN 4 — INSIGHTS & ANALYTICS
+#  REIMAGINED INSIGHTS PAGE: 12-MONTH SUMMARY (STARTING POINT) + DRILL DOWN
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_analytics():
@@ -1319,12 +1319,73 @@ def screen_analytics():
     settings = load_settings()
     sym = settings.get("currency_symbol", "₹")
 
+    if df.empty:
+        st.info("No transaction data available."); return
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # 1. STARTING POINT: 12-MONTH HISTORICAL MONTHLY SUMMARY
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="card-title">🚀 Starting Point: Last 12 Months Historical Summary</div>', unsafe_allow_html=True)
+    
+    all_exp = df[df["Amount"] < 0].copy()
+    if not all_exp.empty:
+        all_exp["Abs"] = all_exp["Amount"].abs()
+        all_exp["YearMonth"] = all_exp["Date"].dt.to_period("M")
+        
+        # Build 12-month period range ending at current month
+        now_dt = datetime.today()
+        last_12_periods = pd.period_range(end=pd.Period(now_dt, freq="M"), periods=12, freq="M")
+        
+        m_summary = all_exp.groupby("YearMonth")["Abs"].sum().reindex(last_12_periods, fill_value=0).reset_index()
+        m_summary.columns = ["Period", "Spend"]
+        m_summary["MonthStr"] = m_summary["Period"].dt.strftime("%b %Y")
+        
+        tot_12m = m_summary["Spend"].sum()
+        avg_12m = m_summary["Spend"].mean()
+        
+        # Peak & Lowest Month
+        peak_idx = m_summary["Spend"].idxmax()
+        peak_row = m_summary.loc[peak_idx] if not m_summary.empty else None
+        
+        non_zero_m = m_summary[m_summary["Spend"] > 0]
+        low_row = non_zero_m.loc[non_zero_m["Spend"].idxmin()] if not non_zero_m.empty else None
+
+        # 12M Summary KPI Cards
+        h1, h2, h3, h4 = st.columns(4)
+        with h1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Cumulative Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{tot_12m:,.0f}</div><div class="kpi-sub">Total expenses (12 Months)</div></div>', unsafe_allow_html=True)
+        with h2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Monthly Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{avg_12m:,.0f}</div><div class="kpi-sub">Avg spend / month</div></div>', unsafe_allow_html=True)
+        with h3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Peak Spend Month</div><div class="kpi-value" style="color:{C["warning"]}">{sym}{(peak_row["Spend"] if peak_row is not None else 0):,.0f}</div><div class="kpi-sub">{peak_row["MonthStr"] if peak_row is not None else "—"}</div></div>', unsafe_allow_html=True)
+        with h4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Lowest Spend Month</div><div class="kpi-value" style="color:{C["income"]}">{sym}{(low_row["Spend"] if low_row is not None else 0):,.0f}</div><div class="kpi-sub">{low_row["MonthStr"] if low_row is not None else "—"}</div></div>', unsafe_allow_html=True)
+
+        # 12M Plotly Monthly Trend Bar Chart
+        fig_12m = go.Figure()
+        fig_12m.add_trace(go.Bar(
+            x=m_summary["MonthStr"], y=m_summary["Spend"],
+            marker_color=C["primary"],
+            text=[f"{sym}{v:,.0f}" if v > 0 else "" for v in m_summary["Spend"]],
+            textposition="outside"
+        ))
+        fig_12m.add_hline(y=avg_12m, line_dash="dash", line_color=C["warning"], annotation_text="12M Avg", annotation_position="top left")
+        fig_12m.update_layout(
+            height=240, margin=dict(l=0, r=0, t=20, b=0),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font_color=C["text"],
+            yaxis=dict(tickprefix=sym, gridcolor=C["border"]),
+            xaxis=dict(gridcolor=C["border"])
+        )
+        st.plotly_chart(fig_12m, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("<hr style='margin:20px 0;'>", unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # 2. SECONDARY SECTION: SINGLE PERIOD DRILL-DOWN & MoM ANALYSIS
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="card-title">🔎 Single Period Drill-Down & MoM Analysis</div>', unsafe_allow_html=True)
+    
     months_opts = get_descending_months(df)
     c1, c2 = st.columns(2)
     with c1: sel_month = st.selectbox("📅 Period:", months_opts, key="insights_m_dd")
     with c2: sel_acct = st.selectbox("💳 Account Filter:", ["All"] + extract_accounts(df), key="insights_a_dd")
-
-    if df.empty: st.info("No transaction data available."); return
 
     sel_dt = datetime.strptime(sel_month, "%B %Y")
     ms, me = month_range(sel_dt.year, sel_dt.month)
@@ -1333,7 +1394,7 @@ def screen_analytics():
 
     cur_tot = abs(exp_df["Amount"].sum()) if not exp_df.empty else 0
 
-    # MoM Calculation
+    # Previous Month Calculation
     prev_dt = sel_dt - timedelta(days=15)
     pms, pme = month_range(prev_dt.year, prev_dt.month)
     prev_df = filter_by_account(df[(df["Date"].dt.date >= pms) & (df["Date"].dt.date <= pme) & (df["Amount"] < 0)], sel_acct)
@@ -1344,18 +1405,18 @@ def screen_analytics():
     days_in_m = calendar.monthrange(sel_dt.year, sel_dt.month)[1]
     daily_avg = cur_tot / days_in_m if days_in_m > 0 else 0
 
-    # 1. MoM Comparison Cards
+    # MoM KPI Cards
     i1, i2, i3, i4 = st.columns(4)
     with i1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">{sel_month} Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{cur_tot:,.0f}</div><div class="kpi-sub">Selected Period</div></div>', unsafe_allow_html=True)
-    with i2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Previous Period</div><div class="kpi-value" style="color:{C["muted"]}">{sym}{prev_tot:,.0f}</div><div class="kpi-sub">{prev_dt.strftime("%B %Y")}</div></div>', unsafe_allow_html=True)
+    with i2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Previous Period Spend</div><div class="kpi-value" style="color:{C["muted"]}">{sym}{prev_tot:,.0f}</div><div class="kpi-sub">{prev_dt.strftime("%B %Y")}</div></div>', unsafe_allow_html=True)
     with i3:
         v_color = C["expense"] if delta > 0 else C["income"]
         v_arrow = "▲" if delta > 0 else "▼"
         st.markdown(f'<div class="kpi-card"><div class="kpi-label">MoM Variance</div><div class="kpi-value" style="color:{v_color}">{v_arrow} {abs(delta_pct):.1f}%</div><div class="kpi-sub">{v_arrow}{sym}{abs(delta):,.0f} vs prev month</div></div>', unsafe_allow_html=True)
-    with i4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Daily Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{daily_avg:,.0f}</div><div class="kpi-sub">Avg per day ({days_in_m} days)</div></div>', unsafe_allow_html=True)
+    with i4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Daily Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{daily_avg:,.0f}</div><div class="kpi-sub">Avg / day ({days_in_m} days)</div></div>', unsafe_allow_html=True)
 
-    # 2. Daily Expense Trend Chart
-    st.markdown('<div class="card-title" style="margin-top:16px;">📅 Daily Expense Trend</div>', unsafe_allow_html=True)
+    # Daily Expense Trend Chart for Selected Month
+    st.markdown('<div class="card-title" style="margin-top:16px;">📅 Daily Expense Trend ({sel_month})</div>', unsafe_allow_html=True)
     if not exp_df.empty:
         exp_df["Abs"] = exp_df["Amount"].abs()
         exp_df["Day"] = exp_df["Date"].dt.day
@@ -1365,14 +1426,17 @@ def screen_analytics():
 
         fig_daily = go.Figure()
         fig_daily.add_trace(go.Bar(x=daily_full["Day"], y=daily_full["Abs"], marker_color=C["primary"], name="Daily Spend"))
-        fig_daily.update_layout(height=220, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], xaxis=dict(title="Day of Month", dtick=2), yaxis=dict(tickprefix=sym), showlegend=False)
+        fig_daily.update_layout(height=200, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], xaxis=dict(title="Day of Month", dtick=2), yaxis=dict(tickprefix=sym), showlegend=False)
         st.plotly_chart(fig_daily, use_container_width=True, config={"displayModeBar": False})
 
-    # 3 Descending Breakdowns
-    st.markdown('<div class="card-title" style="margin-top:16px;">📊 Ranked Spend Breakdowns</div>', unsafe_allow_html=True)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # 3. RANKED SPEND BREAKDOWNS (DESCENDING ORDER)
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="card-title" style="margin-top:16px;">📊 Ranked Spend Breakdowns (Descending)</div>', unsafe_allow_html=True)
     b1, b2, b3 = st.columns(3)
 
     if not exp_df.empty:
+        # Category Breakdown (Descending)
         with b1:
             st.markdown('<div class="card-panel">', unsafe_allow_html=True)
             st.markdown('**Category Breakdown (Descending)**')
@@ -1384,6 +1448,7 @@ def screen_analytics():
                 st.progress(pct / 100)
             st.markdown('</div>', unsafe_allow_html=True)
 
+        # Subcategory Breakdown (Descending)
         with b2:
             st.markdown('<div class="card-panel">', unsafe_allow_html=True)
             st.markdown('**Subcategory Breakdown (Descending)**')
@@ -1395,6 +1460,7 @@ def screen_analytics():
                 st.progress(pct / 100)
             st.markdown('</div>', unsafe_allow_html=True)
 
+        # Account Breakdown (Descending)
         with b3:
             st.markdown('<div class="card-panel">', unsafe_allow_html=True)
             st.markdown('**Account Breakdown (Descending)**')
@@ -1406,6 +1472,13 @@ def screen_analytics():
                 st.write(f"{account_badge_html(a_name)}: `{sym}{a_amt:,.0f}` ({pct:.0f}%)", unsafe_allow_html=True)
                 st.progress(pct / 100)
             st.markdown('</div>', unsafe_allow_html=True)
+
+    # Telegram Trigger Guard
+    try:
+        tg_cfg = load_telegram_settings()
+        if tg_cfg.get("bot_token") and tg_cfg.get("chat_id"):
+            check_and_send_budget_alerts(df, load_budgets(), settings, tg_cfg)
+    except: pass
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SCREEN 5 — SETTINGS & FULL TOOLS SUITE
