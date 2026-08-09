@@ -888,7 +888,12 @@ def render_top_bar():
     for i, (key, label) in enumerate(NAV_ITEMS):
         with cols[i]:
             if st.button(label, key=f"nav_btn_{key}", type="primary" if st.session_state.nav == key else "secondary", use_container_width=True):
-                st.session_state.nav = key; st.rerun()
+                st.session_state.nav = key
+                # RESET all popup dialog flags on page navigation so dialogs do not follow user
+                st.session_state.review_misc_page = False
+                st.session_state.edit_txn = None
+                st.session_state.pending_bulk = None
+                st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SCREEN 1 — SUMMARY (HOME DASHBOARD)
@@ -1529,7 +1534,10 @@ def main():
 
     if st.session_state.get("edit_txn"): dlg_edit(st.session_state.edit_txn)
     if st.session_state.get("pending_bulk"): dlg_bulk_suggest()
-    if st.session_state.get("review_misc_page"): dlg_review_misc()
+    
+    # Only allow review dialog to show when on Spends page
+    if st.session_state.get("review_misc_page") and st.session_state.nav == "transactions":
+        dlg_review_misc()
 
 if __name__ == "__main__":
     main()
