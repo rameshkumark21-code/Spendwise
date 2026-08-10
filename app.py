@@ -1,32 +1,3 @@
-The issue in your screenshots is caused by Streamlit's internal column engine
-(st.columns). When Streamlit detects a mobile screen or a narrow container
-width, it forces all columns to collapse into 100% stacked vertical blocks. That
-is why:
-
-  - Nav buttons collapsed into broken vertical text (Sum mar y, Spen ds).
-  - KPI numbers wrapped vertically across lines (₹6,8 89).
-  - Plotly horizontal bar charts were compressed into 3 tiny unreadable columns
-    (EWELLERS INDI).
-
-📱 The Fix: True Mobile-Native Rendering Engine
-
-To permanently prevent Streamlit's column collapse on mobile:
-
-1.  Mobile Header & Screen Menu: On Mobile mode, the top navigation replaces
-    broken vertical buttons with a Clean Mobile Dropdown / Segmented Control.
-2.  2x2 CSS KPI Grid: KPIs render using a custom CSS Grid that guarantees
-    numbers never break vertically (₹6,889).
-3.  Full-Width Chart Tabs: Charts on mobile use Full-Width Segmented Tabs (By
-    Category | By SubCategory | Top Merchants). Each chart gets 100% of the
-    mobile screen width, so text labels never cut off.
-4.  Native Mobile Transaction Cards: Transactions render as single-block card
-    components with Merchant, Amount, Date, Category tags, Account badges, and
-    Notes, with an inline edit button.
-
-🐍 Complete Updated File: app.py
-
-Replace your entire app.py on GitHub / Streamlit Cloud with this updated code:
-
 import streamlit as st
 import pandas as pd
 import gspread
