@@ -1,3 +1,32 @@
+The issue in your screenshots is caused by Streamlit's internal column engine
+(st.columns). When Streamlit detects a mobile screen or a narrow container
+width, it forces all columns to collapse into 100% stacked vertical blocks. That
+is why:
+
+  - Nav buttons collapsed into broken vertical text (Sum mar y, Spen ds).
+  - KPI numbers wrapped vertically across lines (₹6,8 89).
+  - Plotly horizontal bar charts were compressed into 3 tiny unreadable columns
+    (EWELLERS INDI).
+
+📱 The Fix: True Mobile-Native Rendering Engine
+
+To permanently prevent Streamlit's column collapse on mobile:
+
+1.  Mobile Header & Screen Menu: On Mobile mode, the top navigation replaces
+    broken vertical buttons with a Clean Mobile Dropdown / Segmented Control.
+2.  2x2 CSS KPI Grid: KPIs render using a custom CSS Grid that guarantees
+    numbers never break vertically (₹6,889).
+3.  Full-Width Chart Tabs: Charts on mobile use Full-Width Segmented Tabs (By
+    Category | By SubCategory | Top Merchants). Each chart gets 100% of the
+    mobile screen width, so text labels never cut off.
+4.  Native Mobile Transaction Cards: Transactions render as single-block card
+    components with Merchant, Amount, Date, Category tags, Account badges, and
+    Notes, with an inline edit button.
+
+🐍 Complete Updated File: app.py
+
+Replace your entire app.py on GitHub / Streamlit Cloud with this updated code:
+
 import streamlit as st
 import pandas as pd
 import gspread
@@ -629,6 +658,19 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
 
 [data-testid="stHeader"], [data-testid="stToolbar"], footer, #MainMenu {{ display:none !important; }}
 
+/* Force Streamlit columns to NEVER collapse into vertical stacks */
+div[data-testid="stHorizontalBlock"] {{
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    gap: 6px !important;
+}}
+div[data-testid="column"] {{
+    width: auto !important;
+    flex: 1 1 0px !important;
+    min-width: 0 !important;
+}}
+
 /* Panels */
 .card-panel {{
     background: {C["surface"]};
@@ -646,17 +688,18 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
 .kpi-card {{
     background: {C["surface"]};
     border: 1px solid {C["border"]};
-    border-radius: 14px; padding: 14px 16px;
+    border-radius: 14px; padding: 12px 14px;
 }}
 .kpi-label {{
-    font-size: 0.65rem; font-weight: 800; text-transform: uppercase;
-    letter-spacing: 1px; color: {C["muted"]}; margin-bottom: 4px;
+    font-size: 0.6rem; font-weight: 800; text-transform: uppercase;
+    letter-spacing: 0.8px; color: {C["muted"]}; margin-bottom: 4px;
 }}
 .kpi-value {{
     font-family: 'JetBrains Mono', monospace;
-    font-size: 1.6rem; font-weight: 700;
+    font-size: 1.35rem; font-weight: 700;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }}
-.kpi-sub {{ font-size: 0.72rem; margin-top: 4px; color: {C["muted"]}; }}
+.kpi-sub {{ font-size: 0.7rem; margin-top: 4px; color: {C["muted"]}; }}
 
 /* Summary Strip */
 .summary-strip {{
@@ -668,7 +711,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
     font-size: 0.82rem; flex-wrap: wrap; gap: 8px;
 }}
 
-/* Mobile Native Item Card Components */
+/* Mobile Native Card Components */
 .mobile-card-row {{
     display: flex;
     align-items: center;
@@ -952,7 +995,7 @@ def dlg_review_misc():
                 _bulk_update_merchant_cat(mids, sc, ss); st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TOP HEADER & NAVIGATION
+#  TOP HEADER & NAVIGATION (MOBILE NATIVE OPTIMIZED)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def render_top_bar():
@@ -977,23 +1020,41 @@ def render_top_bar():
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     
-    NAV_ITEMS = [
-        ("home", "🏠 Summary"), 
-        ("transactions", "📋 Spends"), 
-        ("add", "➕ Add & Import"), 
-        ("categories", "🏷️ Category Manager"), 
-        ("analytics", "📊 Insights"), 
-        ("settings", "⚙️ Settings")
-    ]
-    cols = st.columns(len(NAV_ITEMS))
-    for i, (key, label) in enumerate(NAV_ITEMS):
-        with cols[i]:
-            if st.button(label, key=f"nav_btn_{key}", type="primary" if st.session_state.nav == key else "secondary", use_container_width=True):
-                st.session_state.nav = key
-                st.session_state.review_misc_page = False
-                st.session_state.edit_txn = None
-                st.session_state.pending_bulk = None
-                st.rerun()
+    NAV_MAP = {
+        "home": "🏠 Summary",
+        "transactions": "📋 Spends",
+        "add": "➕ Add & Import",
+        "categories": "🏷️ Categories",
+        "analytics": "📊 Insights",
+        "settings": "⚙️ Settings"
+    }
+
+    if st.session_state.view_mode == "mobile":
+        # Mobile Native Navigation Selector Dropdown (Zero Text Wrapping!)
+        sel_nav_label = st.selectbox(
+            "📱 Select Screen:",
+            list(NAV_MAP.values()),
+            index=list(NAV_MAP.keys()).index(st.session_state.nav),
+            key="mobile_nav_dropdown"
+        )
+        selected_nav_key = [k for k, v in NAV_MAP.items() if v == sel_nav_label][0]
+        if selected_nav_key != st.session_state.nav:
+            st.session_state.nav = selected_nav_key
+            st.session_state.review_misc_page = False
+            st.session_state.edit_txn = None
+            st.session_state.pending_bulk = None
+            st.rerun()
+    else:
+        # Desktop Nav Grid
+        cols = st.columns(len(NAV_MAP))
+        for i, (key, label) in enumerate(NAV_MAP.items()):
+            with cols[i]:
+                if st.button(label, key=f"nav_btn_{key}", type="primary" if st.session_state.nav == key else "secondary", use_container_width=True):
+                    st.session_state.nav = key
+                    st.session_state.review_misc_page = False
+                    st.session_state.edit_txn = None
+                    st.session_state.pending_bulk = None
+                    st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SCREEN 1 — SUMMARY (HOME DASHBOARD)
@@ -1023,11 +1084,22 @@ def screen_home():
     rem_budget = max(budget - spent, 0)
     pct_used = min(spent / budget * 100, 100) if budget > 0 else 0
 
-    k1, k2, k3, k4 = st.columns(4)
-    with k1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Spent</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{spent:,.0f}</div><div class="kpi-sub">Current period</div></div>', unsafe_allow_html=True)
-    with k2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Monthly Budget</div><div class="kpi-value">{sym}{budget:,.0f}</div><div class="kpi-sub">Target limit</div></div>', unsafe_allow_html=True)
-    with k3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Budget Remaining</div><div class="kpi-value" style="color:{C["income"]}">{sym}{rem_budget:,.0f}</div><div class="kpi-sub">{pct_used:.0f}% used</div></div>', unsafe_allow_html=True)
-    with k4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Spends</div><div class="kpi-value" style="color:{C["primary"]}">{len(exp_df)}</div><div class="kpi-sub">Transactions</div></div>', unsafe_allow_html=True)
+    if st.session_state.view_mode == "mobile":
+        # Mobile 2x2 CSS Grid (Zero Vertical Text Wrapping)
+        st.markdown(f"""
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+            <div class="kpi-card"><div class="kpi-label">TOTAL SPENT</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{spent:,.0f}</div><div class="kpi-sub">Current period</div></div>
+            <div class="kpi-card"><div class="kpi-label">MONTHLY BUDGET</div><div class="kpi-value">{sym}{budget:,.0f}</div><div class="kpi-sub">Target limit</div></div>
+            <div class="kpi-card"><div class="kpi-label">BUDGET REMAINING</div><div class="kpi-value" style="color:{C["income"]}">{sym}{rem_budget:,.0f}</div><div class="kpi-sub">{pct_used:.0f}% used</div></div>
+            <div class="kpi-card"><div class="kpi-label">TOTAL SPENDS</div><div class="kpi-value" style="color:{C["primary"]}">{len(exp_df)}</div><div class="kpi-sub">Transactions</div></div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        # Desktop 4 Column Grid
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Spent</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{spent:,.0f}</div><div class="kpi-sub">Current period</div></div>', unsafe_allow_html=True)
+        with k2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Monthly Budget</div><div class="kpi-value">{sym}{budget:,.0f}</div><div class="kpi-sub">Target limit</div></div>', unsafe_allow_html=True)
+        with k3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Budget Remaining</div><div class="kpi-value" style="color:{C["income"]}">{sym}{rem_budget:,.0f}</div><div class="kpi-sub">{pct_used:.0f}% used</div></div>', unsafe_allow_html=True)
+        with k4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Spends</div><div class="kpi-value" style="color:{C["primary"]}">{len(exp_df)}</div><div class="kpi-sub">Transactions</div></div>', unsafe_allow_html=True)
 
     # Per-Account Breakdown Expander
     accounts = extract_accounts(mdf)
@@ -1045,25 +1117,45 @@ def screen_home():
         st.markdown(f'<div class="card-panel" style="border-left:4px solid {C["warning"]};padding:10px 14px;"><b style="color:{C["warning"]}">⚠️ Spend Velocity Alert:</b> Spent <b>{pct_used:.0f}%</b> of budget vs <b>{expected_pct:.0f}%</b> of month elapsed.</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card-title">Spending Distributions</div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
     
     if not exp_df.empty:
         exp_df["Abs"] = exp_df["Amount"].abs()
         
-        cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
-        fig_cat = go.Figure(go.Bar(x=cat_grp["Abs"], y=cat_grp["Category"], orientation='h', marker_color=C["primary"]))
-        fig_cat.update_layout(height=200, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], title=dict(text="By Category", font_size=12))
-        with c1: st.plotly_chart(fig_cat, use_container_width=True, config={"displayModeBar":False})
+        if st.session_state.view_mode == "mobile":
+            # Mobile Full-Width Segmented Tabs for 100% Readable Charts
+            t1, t2, t3 = st.tabs(["By Category", "By SubCategory", "Top Merchants"])
+            with t1:
+                cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
+                fig_cat = go.Figure(go.Bar(x=cat_grp["Abs"], y=cat_grp["Category"], orientation='h', marker_color=C["primary"]))
+                fig_cat.update_layout(height=200, margin=dict(l=0,r=0,t=10,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"])
+                st.plotly_chart(fig_cat, use_container_width=True, config={"displayModeBar":False})
+            with t2:
+                sub_grp = exp_df.groupby("Subcategory")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
+                fig_sub = go.Figure(go.Bar(x=sub_grp["Abs"], y=sub_grp["Subcategory"], orientation='h', marker_color=C["income"]))
+                fig_sub.update_layout(height=200, margin=dict(l=0,r=0,t=10,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"])
+                st.plotly_chart(fig_sub, use_container_width=True, config={"displayModeBar":False})
+            with t3:
+                merch_grp = exp_df.groupby("Merchant")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
+                fig_m = go.Figure(go.Bar(x=merch_grp["Abs"], y=merch_grp["Merchant"], orientation='h', marker_color=C["warning"]))
+                fig_m.update_layout(height=200, margin=dict(l=0,r=0,t=10,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"])
+                st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar":False})
+        else:
+            # Desktop 3 Side-by-side Columns
+            c1, c2, c3 = st.columns(3)
+            cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
+            fig_cat = go.Figure(go.Bar(x=cat_grp["Abs"], y=cat_grp["Category"], orientation='h', marker_color=C["primary"]))
+            fig_cat.update_layout(height=200, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], title=dict(text="By Category", font_size=12))
+            with c1: st.plotly_chart(fig_cat, use_container_width=True, config={"displayModeBar":False})
 
-        sub_grp = exp_df.groupby("Subcategory")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
-        fig_sub = go.Figure(go.Bar(x=sub_grp["Abs"], y=sub_grp["Subcategory"], orientation='h', marker_color=C["income"]))
-        fig_sub.update_layout(height=200, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], title=dict(text="By SubCategory", font_size=12))
-        with c2: st.plotly_chart(fig_sub, use_container_width=True, config={"displayModeBar":False})
+            sub_grp = exp_df.groupby("Subcategory")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
+            fig_sub = go.Figure(go.Bar(x=sub_grp["Abs"], y=sub_grp["Subcategory"], orientation='h', marker_color=C["income"]))
+            fig_sub.update_layout(height=200, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], title=dict(text="By SubCategory", font_size=12))
+            with c2: st.plotly_chart(fig_sub, use_container_width=True, config={"displayModeBar":False})
 
-        merch_grp = exp_df.groupby("Merchant")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
-        fig_m = go.Figure(go.Bar(x=merch_grp["Abs"], y=merch_grp["Merchant"], orientation='h', marker_color=C["warning"]))
-        fig_m.update_layout(height=200, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], title=dict(text="Top Merchants", font_size=12))
-        with c3: st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar":False})
+            merch_grp = exp_df.groupby("Merchant")["Abs"].sum().reset_index().sort_values("Abs", ascending=True).tail(5)
+            fig_m = go.Figure(go.Bar(x=merch_grp["Abs"], y=merch_grp["Merchant"], orientation='h', marker_color=C["warning"]))
+            fig_m.update_layout(height=200, margin=dict(l=0,r=0,t=20,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color=C["text"], title=dict(text="Top Merchants", font_size=12))
+            with c3: st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar":False})
     else:
         st.info("No transaction data available for this selection.")
 
@@ -1476,11 +1568,20 @@ def screen_analytics():
         non_zero_m = m_summary[m_summary["Spend"] > 0]
         low_row = non_zero_m.loc[non_zero_m["Spend"].idxmin()] if not non_zero_m.empty else None
 
-        h1, h2, h3, h4 = st.columns(4)
-        with h1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Cumulative Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{tot_12m:,.0f}</div><div class="kpi-sub">Total expenses (12 Months)</div></div>', unsafe_allow_html=True)
-        with h2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Monthly Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{avg_12m:,.0f}</div><div class="kpi-sub">Avg spend / month</div></div>', unsafe_allow_html=True)
-        with h3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Peak Spend Month</div><div class="kpi-value" style="color:{C["warning"]}">{sym}{(peak_row["Spend"] if peak_row is not None else 0):,.0f}</div><div class="kpi-sub">{peak_row["MonthStr"] if peak_row is not None else "—"}</div></div>', unsafe_allow_html=True)
-        with h4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Lowest Spend Month</div><div class="kpi-value" style="color:{C["income"]}">{sym}{(low_row["Spend"] if low_row is not None else 0):,.0f}</div><div class="kpi-sub">{low_row["MonthStr"] if low_row is not None else "—"}</div></div>', unsafe_allow_html=True)
+        if st.session_state.view_mode == "mobile":
+            st.markdown(f"""
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+                <div class="kpi-card"><div class="kpi-label">12M CUMULATIVE</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{tot_12m:,.0f}</div><div class="kpi-sub">Total 12 Months</div></div>
+                <div class="kpi-card"><div class="kpi-label">12M MONTHLY AVG</div><div class="kpi-value" style="color:{C["info"]}">{sym}{avg_12m:,.0f}</div><div class="kpi-sub">Average / month</div></div>
+                <div class="kpi-card"><div class="kpi-label">PEAK SPEND</div><div class="kpi-value" style="color:{C["warning"]}">{sym}{(peak_row["Spend"] if peak_row is not None else 0):,.0f}</div><div class="kpi-sub">{peak_row["MonthStr"] if peak_row is not None else "—"}</div></div>
+                <div class="kpi-card"><div class="kpi-label">LOWEST SPEND</div><div class="kpi-value" style="color:{C["income"]}">{sym}{(low_row["Spend"] if low_row is not None else 0):,.0f}</div><div class="kpi-sub">{low_row["MonthStr"] if low_row is not None else "—"}</div></div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            h1, h2, h3, h4 = st.columns(4)
+            with h1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Cumulative Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{tot_12m:,.0f}</div><div class="kpi-sub">Total expenses (12 Months)</div></div>', unsafe_allow_html=True)
+            with h2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">12M Monthly Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{avg_12m:,.0f}</div><div class="kpi-sub">Avg spend / month</div></div>', unsafe_allow_html=True)
+            with h3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Peak Spend Month</div><div class="kpi-value" style="color:{C["warning"]}">{sym}{(peak_row["Spend"] if peak_row is not None else 0):,.0f}</div><div class="kpi-sub">{peak_row["MonthStr"] if peak_row is not None else "—"}</div></div>', unsafe_allow_html=True)
+            with h4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Lowest Spend Month</div><div class="kpi-value" style="color:{C["income"]}">{sym}{(low_row["Spend"] if low_row is not None else 0):,.0f}</div><div class="kpi-sub">{low_row["MonthStr"] if low_row is not None else "—"}</div></div>', unsafe_allow_html=True)
 
         fig_12m = go.Figure()
         fig_12m.add_trace(go.Bar(
@@ -1491,7 +1592,7 @@ def screen_analytics():
         ))
         fig_12m.add_hline(y=avg_12m, line_dash="dash", line_color=C["warning"], annotation_text="12M Avg", annotation_position="top left")
         fig_12m.update_layout(
-            height=240, margin=dict(l=0, r=0, t=20, b=0),
+            height=220, margin=dict(l=0, r=0, t=20, b=0),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font_color=C["text"],
             yaxis=dict(tickprefix=sym, gridcolor=C["border"]),
@@ -1526,14 +1627,23 @@ def screen_analytics():
     days_in_m = calendar.monthrange(sel_dt.year, sel_dt.month)[1]
     daily_avg = cur_tot / days_in_m if days_in_m > 0 else 0
 
-    i1, i2, i3, i4 = st.columns(4)
-    with i1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">{sel_month} Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{cur_tot:,.0f}</div><div class="kpi-sub">Selected Period</div></div>', unsafe_allow_html=True)
-    with i2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Previous Period Spend</div><div class="kpi-value" style="color:{C["muted"]}">{sym}{prev_tot:,.0f}</div><div class="kpi-sub">{prev_dt.strftime("%B %Y")}</div></div>', unsafe_allow_html=True)
-    with i3:
-        v_color = C["expense"] if delta > 0 else C["income"]
-        v_arrow = "▲" if delta > 0 else "▼"
-        st.markdown(f'<div class="kpi-card"><div class="kpi-label">MoM Variance</div><div class="kpi-value" style="color:{v_color}">{v_arrow} {abs(delta_pct):.1f}%</div><div class="kpi-sub">{v_arrow}{sym}{abs(delta):,.0f} vs prev month</div></div>', unsafe_allow_html=True)
-    with i4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Daily Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{daily_avg:,.0f}</div><div class="kpi-sub">Avg / day ({days_in_m} days)</div></div>', unsafe_allow_html=True)
+    if st.session_state.view_mode == "mobile":
+        st.markdown(f"""
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+            <div class="kpi-card"><div class="kpi-label">{sel_month[:8]} SPEND</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{cur_tot:,.0f}</div><div class="kpi-sub">Selected Period</div></div>
+            <div class="kpi-card"><div class="kpi-label">PREV SPEND</div><div class="kpi-value" style="color:{C["muted"]}">{sym}{prev_tot:,.0f}</div><div class="kpi-sub">{prev_dt.strftime("%b %Y")}</div></div>
+            <div class="kpi-card"><div class="kpi-label">MOM VARIANCE</div><div class="kpi-value" style="color:{C["warning"] if delta>0 else C["income"]}">{"▲" if delta>0 else "▼"}{abs(delta_pct):.0f}%</div><div class="kpi-sub">vs prev month</div></div>
+            <div class="kpi-card"><div class="kpi-label">DAILY AVERAGE</div><div class="kpi-value" style="color:{C["info"]}">{sym}{daily_avg:,.0f}</div><div class="kpi-sub">Avg / day</div></div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        i1, i2, i3, i4 = st.columns(4)
+        with i1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">{sel_month} Spend</div><div class="kpi-value" style="color:{C["expense"]}">{sym}{cur_tot:,.0f}</div><div class="kpi-sub">Selected Period</div></div>', unsafe_allow_html=True)
+        with i2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Previous Period Spend</div><div class="kpi-value" style="color:{C["muted"]}">{sym}{prev_tot:,.0f}</div><div class="kpi-sub">{prev_dt.strftime("%B %Y")}</div></div>', unsafe_allow_html=True)
+        with i3:
+            v_color = C["expense"] if delta > 0 else C["income"]
+            v_arrow = "▲" if delta > 0 else "▼"
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">MoM Variance</div><div class="kpi-value" style="color:{v_color}">{v_arrow} {abs(delta_pct):.1f}%</div><div class="kpi-sub">{v_arrow}{sym}{abs(delta):,.0f} vs prev month</div></div>', unsafe_allow_html=True)
+        with i4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Daily Average</div><div class="kpi-value" style="color:{C["info"]}">{sym}{daily_avg:,.0f}</div><div class="kpi-sub">Avg / day ({days_in_m} days)</div></div>', unsafe_allow_html=True)
 
     # Daily Expense Trend Chart for Selected Month
     st.markdown(f'<div class="card-title" style="margin-top:16px;">📅 Daily Expense Trend ({sel_month})</div>', unsafe_allow_html=True)
@@ -1551,42 +1661,70 @@ def screen_analytics():
 
     # 3. RANKED SPEND BREAKDOWNS (DESCENDING ORDER)
     st.markdown('<div class="card-title" style="margin-top:16px;">📊 Ranked Spend Breakdowns (Descending)</div>', unsafe_allow_html=True)
-    b1, b2, b3 = st.columns(3)
+    
+    if st.session_state.view_mode == "mobile":
+        # Mobile View Tabs for Breakdowns
+        t_cat, t_sub, t_acct = st.tabs(["By Category", "By Subcategory", "By Account"])
+        if not exp_df.empty:
+            with t_cat:
+                cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+                for _, row in cat_grp.iterrows():
+                    c_name, c_amt = str(row["Category"]), float(row["Abs"])
+                    pct = (c_amt / cur_tot * 100) if cur_tot > 0 else 0
+                    st.write(f"{cat_icon(c_name)} **{c_name}:** `{sym}{c_amt:,.0f}` ({pct:.0f}%)")
+                    st.progress(pct / 100)
+            with t_sub:
+                sub_grp = exp_df.groupby("Subcategory")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+                for _, row in sub_grp.head(10).iterrows():
+                    s_name, s_amt = str(row["Subcategory"]), float(row["Abs"])
+                    pct = (s_amt / cur_tot * 100) if cur_tot > 0 else 0
+                    st.write(f"📂 **{s_name}:** `{sym}{s_amt:,.0f}` ({pct:.0f}%)")
+                    st.progress(pct / 100)
+            with t_acct:
+                acct_grp = exp_df.groupby("Tags")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+                for _, row in acct_grp.iterrows():
+                    a_name, a_amt = str(row["Tags"]), float(row["Abs"])
+                    if not a_name or a_name == "nan": a_name = "Untagged"
+                    pct = (a_amt / cur_tot * 100) if cur_tot > 0 else 0
+                    st.write(f"{account_badge_html(a_name)}: `{sym}{a_amt:,.0f}` ({pct:.0f}%)", unsafe_allow_html=True)
+                    st.progress(pct / 100)
+    else:
+        # Desktop 3 Columns
+        b1, b2, b3 = st.columns(3)
+        if not exp_df.empty:
+            with b1:
+                st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+                st.markdown('**Category Breakdown (Descending)**')
+                cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+                for _, row in cat_grp.iterrows():
+                    c_name, c_amt = str(row["Category"]), float(row["Abs"])
+                    pct = (c_amt / cur_tot * 100) if cur_tot > 0 else 0
+                    st.write(f"{cat_icon(c_name)} **{c_name}:** `{sym}{c_amt:,.0f}` ({pct:.0f}%)")
+                    st.progress(pct / 100)
+                st.markdown('</div>', unsafe_allow_html=True)
 
-    if not exp_df.empty:
-        with b1:
-            st.markdown('<div class="card-panel">', unsafe_allow_html=True)
-            st.markdown('**Category Breakdown (Descending)**')
-            cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
-            for _, row in cat_grp.iterrows():
-                c_name, c_amt = str(row["Category"]), float(row["Abs"])
-                pct = (c_amt / cur_tot * 100) if cur_tot > 0 else 0
-                st.write(f"{cat_icon(c_name)} **{c_name}:** `{sym}{c_amt:,.0f}` ({pct:.0f}%)")
-                st.progress(pct / 100)
-            st.markdown('</div>', unsafe_allow_html=True)
+            with b2:
+                st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+                st.markdown('**Subcategory Breakdown (Descending)**')
+                sub_grp = exp_df.groupby("Subcategory")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+                for _, row in sub_grp.head(10).iterrows():
+                    s_name, s_amt = str(row["Subcategory"]), float(row["Abs"])
+                    pct = (s_amt / cur_tot * 100) if cur_tot > 0 else 0
+                    st.write(f"📂 **{s_name}:** `{sym}{s_amt:,.0f}` ({pct:.0f}%)")
+                    st.progress(pct / 100)
+                st.markdown('</div>', unsafe_allow_html=True)
 
-        with b2:
-            st.markdown('<div class="card-panel">', unsafe_allow_html=True)
-            st.markdown('**Subcategory Breakdown (Descending)**')
-            sub_grp = exp_df.groupby("Subcategory")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
-            for _, row in sub_grp.head(10).iterrows():
-                s_name, s_amt = str(row["Subcategory"]), float(row["Abs"])
-                pct = (s_amt / cur_tot * 100) if cur_tot > 0 else 0
-                st.write(f"📂 **{s_name}:** `{sym}{s_amt:,.0f}` ({pct:.0f}%)")
-                st.progress(pct / 100)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with b3:
-            st.markdown('<div class="card-panel">', unsafe_allow_html=True)
-            st.markdown('**Account Breakdown (Descending)**')
-            acct_grp = exp_df.groupby("Tags")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
-            for _, row in acct_grp.iterrows():
-                a_name, a_amt = str(row["Tags"]), float(row["Abs"])
-                if not a_name or a_name == "nan": a_name = "Untagged"
-                pct = (a_amt / cur_tot * 100) if cur_tot > 0 else 0
-                st.write(f"{account_badge_html(a_name)}: `{sym}{a_amt:,.0f}` ({pct:.0f}%)", unsafe_allow_html=True)
-                st.progress(pct / 100)
-            st.markdown('</div>', unsafe_allow_html=True)
+            with b3:
+                st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+                st.markdown('**Account Breakdown (Descending)**')
+                acct_grp = exp_df.groupby("Tags")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
+                for _, row in acct_grp.iterrows():
+                    a_name, a_amt = str(row["Tags"]), float(row["Abs"])
+                    if not a_name or a_name == "nan": a_name = "Untagged"
+                    pct = (a_amt / cur_tot * 100) if cur_tot > 0 else 0
+                    st.write(f"{account_badge_html(a_name)}: `{sym}{a_amt:,.0f}` ({pct:.0f}%)", unsafe_allow_html=True)
+                    st.progress(pct / 100)
+                st.markdown('</div>', unsafe_allow_html=True)
 
     # Telegram Trigger Guard
     try:
