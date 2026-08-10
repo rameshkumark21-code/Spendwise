@@ -71,7 +71,7 @@ DEFAULT_CATEGORIES = [
     ["Food & Dining", "Snacks & Sweets", "zam zam sweets,triveni vada pav,teaman,t t tea stall,suketha shetty,sri durga bakery,southern foods,shivani chats and sweets,sattur snacks,rathina madhapan,reddemma k,paban kundu,nuts n chocos,nrk sweets bakery,moideen kunhi,madhappan marappan,kuchen helado,kanti sweets,instant retail india,hasanamba iyengar bakery,gopal krishna shetty,fresh juice house,devishree juice,adavan bakery,a sweets and snacks,a m tasty bakery,bakery,sweets,snacks,juice,tea stall,vada pav", "🍬"],
     ["Food & Dining", "Vegetables & Meat", "sri vinayaga vegetables,ms sri vinayaka vegitables,navyashree vegetable suppliers,my chicken and more,sagar fish and chicken,bismila chicken center,vegetables,vegetable,chicken,fish and chicken,meat,fish", "🥩"],
     ["Health", "Hospital & Clinic", "aristo speciality hospital,sri manjunatha hospital,tirumala orthopaedic,m s sanjivani child care,ms sri meenakshi diagnostic,ms santhi s s sankarnarayanan,sankaranarayanan karuppaiya,narayanaswamy k,s narayanaswamy,sakumalla satyanarayana,chebrolu lakshminarayana,gulab babu,hospital,clinic,doctor,diagnostics,blood test,lab,fortis,manipal,narayana,apollo hospital", "🏥"],
-    ["Health", "Pharmacy", "apollo pharmacy,16428 apollo pharmacy,16012 apollo pharmacy,8 meds pharmacy,m s sanjivani pharma,sanjivani pharma,sulochana medicals,vijaya medicals,pavan medicals,ramdev medical,orsun pharmacy,pradhan mantri bhartiya janaushadhi kendra,wellnessmedicals,janaushadhi,medplus,1mg,pharmeasy,netmeds,pharmacy,medicals,medicine", "💊"],
+    ["Health", "Pharmacy", "apollo pharmacy,16428 apollo pharmacy,8 meds pharmacy,m s sanjivani pharma,sanjivani pharma,sulochana medicals,vijaya medicals,pavan medicals,ramdev medical,orsun pharmacy,pradhan mantri bhartiya janaushadhi kendra,wellnessmedicals,janaushadhi,medplus,1mg,pharmeasy,netmeds,pharmacy,medicals,medicine", "💊"],
     ["Personal Care", "Photography", "sen studio,studio,photography", "📸"],
     ["Personal Care", "Salon & Grooming", "dugdha parlour,salon,spa,haircut,beauty,grooming,nails,parlour,jawed habib", "💇"],
     ["Shopping", "Clothing", "the chennai silks,rainbow kids,pinkz,lifestyle,westside,pantaloons,max fashion,clothing,apparel", "👗"],
@@ -424,10 +424,8 @@ def _move_subcategory(subcat: str, target_cat: str, retrospective: bool) -> tupl
                     updates.append({"range": rowcol_to_a1(i, cat_col), "values": [[target_cat]]})
                     updates.append({"range": rowcol_to_a1(i, ac_col), "values": [["no"]]})
                     txns_updated += 1
-            if updates:
-                ws_txn.batch_update(updates)
-        except Exception as e:
-            st.error(f"Retrospective update failed: {e}")
+            if updates: ws_txn.batch_update(updates)
+        except Exception as e: st.error(f"Retrospective update failed: {e}")
 
     st.cache_data.clear()
     return old_cat or "", txns_updated
@@ -610,7 +608,8 @@ def get_descending_months(df: pd.DataFrame) -> list:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def inject_css():
-    max_w = "480px" if st.session_state.get("view_mode") == "mobile" else "1380px"
+    is_mobile = (st.session_state.get("view_mode") == "mobile")
+    max_w = "480px" if is_mobile else "1380px"
     st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap');
@@ -623,7 +622,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
 
 .block-container {{
     max-width: {max_w} !important;
-    padding: 12px 16px 24px !important;
+    padding: {"10px 12px 90px" if is_mobile else "12px 16px 24px"} !important;
     margin: 0 auto !important;
     transition: max-width 0.3s ease;
 }}
@@ -669,16 +668,23 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
     font-size: 0.82rem; flex-wrap: wrap; gap: 8px;
 }}
 
-/* Mobile Native Card Components */
+/* Mobile Native Item Card Components */
 .mobile-card-row {{
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     background: {C["surface"]};
     border: 1px solid {C["border"]};
-    border-radius: 12px;
-    padding: 10px 12px;
+    border-radius: 14px;
+    padding: 12px 14px;
     margin-bottom: 8px;
+}}
+.txn-avatar-circle {{
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    background: {C["surface2"]};
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.1rem; flex-shrink: 0;
 }}
 .txn-notes-tag {{
     font-size: 0.7rem;
@@ -1084,8 +1090,10 @@ def screen_home():
                 dt_str = row["Date"].strftime("%d %b %Y") if pd.notna(row["Date"]) else "—"
                 notes_html = f'<div class="txn-notes-tag">📝 {row["Notes"]}</div>' if str(row.get("Notes","")).strip() else ""
                 acct_badge = account_badge_html(row.get("Tags","")) if row.get("Tags") else ""
+                ico = cat_icon(row["Category"])
                 st.markdown(f"""
                 <div class="mobile-card-row">
+                    <div class="txn-avatar-circle">{ico}</div>
                     <div style="flex:1;min-width:0;">
                         <div style="font-weight:800;font-size:0.88rem;">{row["Merchant"]}</div>
                         <div style="font-size:0.72rem;color:{C["muted"]};margin-top:2px;">
@@ -1189,8 +1197,10 @@ def screen_transactions():
                 dt_str = row["Date"].strftime("%d %b %Y") if pd.notna(row["Date"]) else "—"
                 notes_html = f'<div class="txn-notes-tag">📝 {row["Notes"]}</div>' if str(row.get("Notes","")).strip() else ""
                 acct_badge = account_badge_html(row.get("Tags","")) if row.get("Tags") else ""
+                ico = cat_icon(row["Category"])
                 st.markdown(f"""
                 <div class="mobile-card-row">
+                    <div class="txn-avatar-circle">{ico}</div>
                     <div style="flex:1;min-width:0;">
                         <div style="font-weight:800;font-size:0.88rem;">{row["Merchant"]}</div>
                         <div style="font-size:0.72rem;color:{C["muted"]};margin-top:2px;">
