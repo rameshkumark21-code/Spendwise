@@ -1385,50 +1385,77 @@ def screen_transactions():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def screen_categories():
-    df = _load_transactions()
-    settings = load_settings()
-    sym = settings.get("currency_symbol", "₹")
-
-    st.markdown('<div class="card-title">Categories Overview</div>', unsafe_allow_html=True)
-    exp_df = df[df["Amount"] < 0].copy() if not df.empty else pd.DataFrame()
-
-    if not exp_df.empty:
-        exp_df["Abs"] = exp_df["Amount"].abs()
-        cat_grp = exp_df.groupby("Category")["Abs"].sum().reset_index().sort_values("Abs", ascending=False)
-        tot_exp = cat_grp["Abs"].sum()
-
-        # Center Donut Chart
-        fig_donut = px.pie(cat_grp, values="Abs", names="Category", hole=0.65, color_discrete_sequence=px.colors.qualitative.Bold)
-        fig_donut.update_layout(
-            annotations=[dict(text=f"{sym}{tot_exp:,.0f}", x=0.5, y=0.5, font_size=20, showarrow=False, font_color=C["text"])],
-            height=260, margin=dict(l=0,r=0,t=10,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False
-        )
-        st.plotly_chart(fig_donut, use_container_width=True, config={"displayModeBar": False})
-
-        # Horizontal Progress Bars
-        st.markdown('<div class="card-panel">', unsafe_allow_html=True)
-        for _, row in cat_grp.iterrows():
-            c_name, c_amt = str(row["Category"]), float(row["Abs"])
-            pct = (c_amt / tot_exp * 100) if tot_exp > 0 else 0
-            st.write(f"{cat_icon(c_name)} **{c_name}:** `{sym}{c_amt:,.0f}` ({pct:.1f}%)")
-            st.progress(pct / 100)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Subcategory Reassignment Tool
-    st.markdown('<div class="card-panel">', unsafe_allow_html=True)
-    st.markdown('### 🔄 Move Subcategory')
+    df_txns = _load_transactions()
     cats_df = load_categories()
-    cats_sorted, _ = load_cat_freq()
-    all_subs_flat = [str(r.get("Subcategory","")).strip() for _, r in cats_df.iterrows() if r.get("Subcategory")]
-    
+    cats_sorted, sub_map = load_cat_freq()
+
+    st.markdown('<div class="card-title">🏷️ Category & Subcategory Manager</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card-panel" style="border-left: 4px solid var(--primary);">', unsafe_allow_html=True)
+    st.markdown('### 🔄 Move Subcategory to Another Category')
+
+    # Extract ALL unique subcategories from BOTH Categories Sheet & Transactions History
+    subs_from_cats = [str(r.get("Subcategory","")).strip() for _, r in cats_df.iterrows() if r.get("Subcategory")]
+    subs_from_txns = df_txns["Subcategory"].dropna().astype(str).str.strip().tolist() if not df_txns.empty and "Subcategory" in df_txns.columns else []
+
+    all_subs_set = set(subs_from_cats + subs_from_txns)
+    all_subs_flat = sorted([s for s in all_subs_set if s and s.lower() not in ("nan", "none", "")])
+
+    # Map current parent category
+    sub_parent_map = {}
+    for _, row in cats_df.iterrows():
+        sub = str(row.get("Subcategory","")).strip()
+        cat = str(row.get("Category","")).strip()
+        if sub: sub_parent_map[sub] = cat
+
+    # Fallback parent lookup from transaction history
+    if not df_txns.empty and "Subcategory" in df_txns.columns and "Category" in df_txns.columns:
+        for _, row in df_txns.iterrows():
+            sub = str(row.get("Subcategory","")).strip()
+            cat = str(row.get("Category","")).strip()
+            if sub and sub not in sub_parent_map and cat:
+                sub_parent_map[sub] = cat
+
     c1, c2 = st.columns(2)
-    with c1: sel_sub_move = st.selectbox("Select Subcategory:", all_subs_flat if all_subs_flat else ["Groceries"])
-    with c2: target_cat = st.selectbox("Move To Category:", cats_sorted)
-    retro = st.checkbox("Retrospectively update past transactions", value=True)
+    with c1:
+        sel_sub_move = st.selectbox("Select Subcategory:", all_subs_flat if all_subs_flat else ["Groceries"])
+        cur_parent = sub_parent_map.get(sel_sub_move, "Others")
+        st.info(f"Current Parent Category: **{cur_parent}**")
+    with c2:
+        target_cat_opts = [c for c in cats_sorted if c != cur_parent]
+        target_cat = st.selectbox("Move To Category:", target_cat_opts if target_cat_opts else cats_sorted)
+
+    retro = st.checkbox("Retrospectively update past transactions in Google Sheets", value=True)
     if st.button("💾 Move Subcategory", type="primary", use_container_width=True):
         old_c, updated = _move_subcategory(sel_sub_move, target_cat, retro)
-        st.success(f"✅ Moved {sel_sub_move} to {target_cat}! Updated {updated} rows."); st.rerun()
+        st.success(f"✅ Moved subcategory **{sel_sub_move}** to **{target_cat}**! Updated {updated} rows."); st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
+
+    # Add New Category Form
+    st.markdown('<div class="card-panel">', unsafe_allow_html=True)
+    st.markdown('### ➕ Add New Category or Subcategory')
+    with st.form("add_cat_mgr_form", clear_on_submit=True):
+        a1, a2 = st.columns(2)
+        with a1:
+            nc = st.text_input("Category Name", placeholder="e.g. Pet Care")
+            nk = st.text_input("Auto-Categorization Keywords (Comma separated)", placeholder="e.g. vet, clinic, dog food")
+        with a2:
+            ns = st.text_input("Subcategory Name", placeholder="e.g. Vet & Food")
+            ni = st.text_input("Emoji Icon", value="📌")
+        
+        if st.form_submit_button("➕ Create Category Mapping", use_container_width=True, type="primary"):
+            if nc.strip() and ns.strip():
+                get_ss().worksheet("Categories").append_row([nc.strip(), ns.strip(), nk.strip(), ni.strip()])
+                st.cache_data.clear()
+                st.success(f"✅ Created {ni} {nc} › {ns}")
+                st.rerun()
+            else:
+                st.error("Enter both Category and Subcategory names.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    with st.expander("📂 Existing Category Mappings & Keyword Rules", expanded=True):
+        if not cats_df.empty:
+            st.dataframe(cats_df[["Category", "Subcategory", "Keywords", "Icon"]], use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SCREEN 5 — CREATE / ADD TRANSACTION FORM
